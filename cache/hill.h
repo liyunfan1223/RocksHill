@@ -45,7 +45,153 @@ enum class RC {
 
 }
 class HillCache;   
-struct HillHandle;
+struct HillHandle {
+  Cache::ObjectPtr value;
+  const Cache::CacheItemHelper* helper;
+  size_t total_charge;  // TODO(opt): Only allow uint32_t?
+  size_t key_length;
+  uint32_t hash;
+  // The number of external refs to this entry. The cache itself is not counted.
+  uint32_t refs;
+
+  uint8_t m_flags;
+  enum MFlags : uint8_t {
+    // Whether this entry is referenced by the hash table.
+    M_IN_CACHE = (1 << 0),
+    // Whether this entry has had any lookups (hits).
+    M_HAS_HIT = (1 << 1),
+    // Whether this entry is in high-pri pool.
+    M_IN_HIGH_PRI_POOL = (1 << 2),
+    // Whether this entry is in low-pri pool.
+    M_IN_LOW_PRI_POOL = (1 << 3),
+  };
+
+  // "Immutable" flags - only set in single-threaded context and then
+  // can be accessed without mutex
+  uint8_t im_flags;
+  enum ImFlags : uint8_t {
+    // Whether this entry is high priority entry.
+    IM_IS_HIGH_PRI = (1 << 0),
+    // Whether this entry is low priority entry.
+    IM_IS_LOW_PRI = (1 << 1),
+    // Marks result handles that should not be inserted into cache
+    IM_IS_STANDALONE = (1 << 2),
+  };
+
+  char key_data[1];
+
+  Slice key() const { return Slice(key_data, key_length); }
+
+  // For HandleImpl concept
+  uint32_t GetHash() const { return hash; }
+
+  // Increase the reference count by 1.
+  void Ref() { refs++; }
+
+  // Just reduce the reference count by 1. Return true if it was last reference.
+  bool Unref() {
+    assert(refs > 0);
+    refs--;
+    return refs == 0;
+  }
+
+  // Return true if there are external refs, false otherwise.
+  bool HasRefs() const { return refs > 0; }
+
+  bool InCache() const { return m_flags & M_IN_CACHE; }
+  bool IsHighPri() const { return im_flags & IM_IS_HIGH_PRI; }
+  bool InHighPriPool() const { return m_flags & M_IN_HIGH_PRI_POOL; }
+  bool IsLowPri() const { return im_flags & IM_IS_LOW_PRI; }
+  bool InLowPriPool() const { return m_flags & M_IN_LOW_PRI_POOL; }
+  bool HasHit() const { return m_flags & M_HAS_HIT; }
+  bool IsStandalone() const { return im_flags & IM_IS_STANDALONE; }
+
+  void SetInCache(bool in_cache) {
+    if (in_cache) {
+      m_flags |= M_IN_CACHE;
+    } else {
+      m_flags &= ~M_IN_CACHE;
+    }
+  }
+
+  void SetPriority(Cache::Priority priority) {
+    if (priority == Cache::Priority::HIGH) {
+      im_flags |= IM_IS_HIGH_PRI;
+      im_flags &= ~IM_IS_LOW_PRI;
+    } else if (priority == Cache::Priority::LOW) {
+      im_flags &= ~IM_IS_HIGH_PRI;
+      im_flags |= IM_IS_LOW_PRI;
+    } else {
+      im_flags &= ~IM_IS_HIGH_PRI;
+      im_flags &= ~IM_IS_LOW_PRI;
+    }
+  }
+
+  void SetInHighPriPool(bool in_high_pri_pool) {
+    if (in_high_pri_pool) {
+      m_flags |= M_IN_HIGH_PRI_POOL;
+    } else {
+      m_flags &= ~M_IN_HIGH_PRI_POOL;
+    }
+  }
+
+  void SetInLowPriPool(bool in_low_pri_pool) {
+    if (in_low_pri_pool) {
+      m_flags |= M_IN_LOW_PRI_POOL;
+    } else {
+      m_flags &= ~M_IN_LOW_PRI_POOL;
+    }
+  }
+
+  void SetHit() { m_flags |= M_HAS_HIT; }
+
+  void SetIsStandalone(bool is_standalone) {
+    if (is_standalone) {
+      im_flags |= IM_IS_STANDALONE;
+    } else {
+      im_flags &= ~IM_IS_STANDALONE;
+    }
+  }
+
+  void Free(MemoryAllocator* allocator) {
+    assert(refs == 0);
+    assert(helper);
+    if (helper->del_cb) {
+      helper->del_cb(value, allocator);
+    }
+
+    free(this);
+  }
+
+  inline size_t CalcuMetaCharge(
+      CacheMetadataChargePolicy metadata_charge_policy) const {
+    if (metadata_charge_policy != kFullChargeCacheMetadata) {
+      return 0;
+    } else {
+#ifdef ROCKSDB_MALLOC_USABLE_SIZE
+      return malloc_usable_size(
+          const_cast<void*>(static_cast<const void*>(this)));
+#else
+      // This is the size that is used when a new handle is created.
+      return sizeof(LRUHandle) - 1 + key_length;
+#endif
+    }
+  }
+
+  // Calculate the memory usage by metadata.
+  inline void CalcTotalCharge(
+      size_t charge, CacheMetadataChargePolicy metadata_charge_policy) {
+    total_charge = charge + CalcuMetaCharge(metadata_charge_policy);
+  }
+
+  inline size_t GetCharge(
+      CacheMetadataChargePolicy metadata_charge_policy) const {
+    size_t meta_charge = CalcuMetaCharge(metadata_charge_policy);
+    assert(total_charge >= meta_charge);
+    return total_charge - meta_charge;
+  }
+};
+
 
 class Replacer {
    public:
@@ -98,6 +244,16 @@ class Replacer {
 class HillSubReplacer {
     struct HillEntry {
         HillEntry() = default;
+        HillEntry& operator=(const HillEntry& other) {
+            if (this != &other) {
+                key_iter = other.key_iter;
+                insert_level = other.insert_level;
+                insert_ts = other.insert_ts;
+                h_recency = other.h_recency;
+                h_ = other.h_;
+            }
+            return *this;
+        }
         HillEntry(std::list<std::string>::iterator _key_iter, int _insert_level,
                   int _insert_ts, bool _h_recency, HillHandle* h) {
             this->key_iter = _key_iter;
@@ -192,8 +348,19 @@ class HillSubReplacer {
         }
         top_lru_.push_front(key);
         // NOTE: 这里应该是把key塞进去。
+        // if (h->value == nullptr) {
+        //     std::cout << "Null value!, Key: " << Slice(key).ToString(true) << "\n";
+        // }
         real_map_[key] =
             HillEntry(top_lru_.begin(), inserted_level, cur_ts_, true, h);
+        // auto entry = real_map_.find(key);
+        // if(entry != real_map_.end()) {
+        //     std::cout << "Insert: \nKey in: " << Slice(key).ToString(true) << "\n"
+        //               << "Key out: " << Slice(entry->first).ToString(true)
+        //               << ", Handle address: " << reinterpret_cast<std::uintptr_t>(entry->second.h_)
+        //               << ", Key in handle: " << Slice(entry->second.h_->key_data, entry->second.h_->key_length).ToString(true) 
+        //               << ", Value address: " << reinterpret_cast<std::uintptr_t>(entry->second.h_->value) << "\n";
+        // }
         cur_ts_++;
         if (cur_ts_ >= next_rolling_ts_) {
             Rolling();
@@ -203,7 +370,16 @@ class HillSubReplacer {
 
     HillHandle* Get(const std::string &key) {
         auto entry = real_map_.find(key);
-        return entry->second.h_;
+        if(entry != real_map_.end()) {
+            // std::cout << "Get: \nKey in: " << Slice(key).ToString(true) << "\n"
+            //           << "Key out: " << Slice(entry->first).ToString(true)
+            //           << ", Handle address: " << reinterpret_cast<std::uintptr_t>(entry->second.h_)
+            //           << ", Key in handle: " << Slice(entry->second.h_->key_data, entry->second.h_->key_length).ToString(true)
+            //           << ", Value address: " << reinterpret_cast<std::uintptr_t>(entry->second.h_->value) << "\n";
+            return entry->second.h_;
+        } else {
+            return nullptr;
+        }
     }
     
     void Evict() {
@@ -348,153 +524,6 @@ class HillSubReplacer {
     friend class HillCache;
 };
 
-struct HillHandle {
-  Cache::ObjectPtr value;
-  const Cache::CacheItemHelper* helper;
-  size_t total_charge;  // TODO(opt): Only allow uint32_t?
-  size_t key_length;
-  uint32_t hash;
-  // The number of external refs to this entry. The cache itself is not counted.
-  uint32_t refs;
-
-  std::string key_;
-
-  Slice key() const { return Slice(key_); }
-
-  // For HandleImpl concept
-  uint32_t GetHash() const { return hash; }
-
-  // Increase the reference count by 1.
-  void Ref() { refs++; }
-
-  // Just reduce the reference count by 1. Return true if it was last reference.
-  bool Unref() {
-    assert(refs > 0);
-    refs--;
-    return refs == 0;
-  }
-
-  uint8_t m_flags;
-  enum MFlags : uint8_t {
-    // Whether this entry is referenced by the hash table.
-    M_IN_CACHE = (1 << 0),
-    // Whether this entry has had any lookups (hits).
-    M_HAS_HIT = (1 << 1),
-    // Whether this entry is in high-pri pool.
-    M_IN_HIGH_PRI_POOL = (1 << 2),
-    // Whether this entry is in low-pri pool.
-    M_IN_LOW_PRI_POOL = (1 << 3),
-  };
-
-  // "Immutable" flags - only set in single-threaded context and then
-  // can be accessed without mutex
-  uint8_t im_flags;
-  enum ImFlags : uint8_t {
-    // Whether this entry is high priority entry.
-    IM_IS_HIGH_PRI = (1 << 0),
-    // Whether this entry is low priority entry.
-    IM_IS_LOW_PRI = (1 << 1),
-    // Marks result handles that should not be inserted into cache
-    IM_IS_STANDALONE = (1 << 2),
-  };
-
-  // Return true if there are external refs, false otherwise.
-  bool HasRefs() const { return refs > 0; }
-
-  bool InCache() const { return m_flags & M_IN_CACHE; }
-  bool IsHighPri() const { return im_flags & IM_IS_HIGH_PRI; }
-  bool InHighPriPool() const { return m_flags & M_IN_HIGH_PRI_POOL; }
-  bool IsLowPri() const { return im_flags & IM_IS_LOW_PRI; }
-  bool InLowPriPool() const { return m_flags & M_IN_LOW_PRI_POOL; }
-  bool HasHit() const { return m_flags & M_HAS_HIT; }
-  bool IsStandalone() const { return im_flags & IM_IS_STANDALONE; }
-
-  void SetInCache(bool in_cache) {
-    if (in_cache) {
-      m_flags |= M_IN_CACHE;
-    } else {
-      m_flags &= ~M_IN_CACHE;
-    }
-  }
-
-  void SetPriority(Cache::Priority priority) {
-    if (priority == Cache::Priority::HIGH) {
-      im_flags |= IM_IS_HIGH_PRI;
-      im_flags &= ~IM_IS_LOW_PRI;
-    } else if (priority == Cache::Priority::LOW) {
-      im_flags &= ~IM_IS_HIGH_PRI;
-      im_flags |= IM_IS_LOW_PRI;
-    } else {
-      im_flags &= ~IM_IS_HIGH_PRI;
-      im_flags &= ~IM_IS_LOW_PRI;
-    }
-  }
-
-  void SetInHighPriPool(bool in_high_pri_pool) {
-    if (in_high_pri_pool) {
-      m_flags |= M_IN_HIGH_PRI_POOL;
-    } else {
-      m_flags &= ~M_IN_HIGH_PRI_POOL;
-    }
-  }
-
-  void SetInLowPriPool(bool in_low_pri_pool) {
-    if (in_low_pri_pool) {
-      m_flags |= M_IN_LOW_PRI_POOL;
-    } else {
-      m_flags &= ~M_IN_LOW_PRI_POOL;
-    }
-  }
-
-  void SetHit() { m_flags |= M_HAS_HIT; }
-
-  void SetIsStandalone(bool is_standalone) {
-    if (is_standalone) {
-      im_flags |= IM_IS_STANDALONE;
-    } else {
-      im_flags &= ~IM_IS_STANDALONE;
-    }
-  }
-
-  void Free(MemoryAllocator* allocator) {
-    assert(refs == 0);
-    assert(helper);
-    if (helper->del_cb) {
-      helper->del_cb(value, allocator);
-    }
-
-    free(this);
-  }
-
-  inline size_t CalcuMetaCharge(
-      CacheMetadataChargePolicy metadata_charge_policy) const {
-    if (metadata_charge_policy != kFullChargeCacheMetadata) {
-      return 0;
-    } else {
-#ifdef ROCKSDB_MALLOC_USABLE_SIZE
-      return malloc_usable_size(
-          const_cast<void*>(static_cast<const void*>(this)));
-#else
-      // This is the size that is used when a new handle is created.
-      return sizeof(LRUHandle) - 1 + key_length;
-#endif
-    }
-  }
-
-  // Calculate the memory usage by metadata.
-  inline void CalcTotalCharge(
-      size_t charge, CacheMetadataChargePolicy metadata_charge_policy) {
-    total_charge = charge + CalcuMetaCharge(metadata_charge_policy);
-  }
-
-  inline size_t GetCharge(
-      CacheMetadataChargePolicy metadata_charge_policy) const {
-    size_t meta_charge = CalcuMetaCharge(metadata_charge_policy);
-    assert(total_charge >= meta_charge);
-    return total_charge - meta_charge;
-  }
-};
-
 
 class HillReplacer : public Replacer {
    public:
@@ -632,11 +661,15 @@ class HillCache
                  double lambda = 1.0f, double simulator_ratio = 0.67f,
                  double top_ratio = 0.05f, double delta_bound = 0.01f,
                  bool update_equals_size = true, int32_t mru_threshold = 64,
-                 int32_t minimal_update_size = 10000, std::shared_ptr<MemoryAllocator> memory_allocator = nullptr): 
+                 int32_t minimal_update_size = 10000, 
+                 std::shared_ptr<MemoryAllocator> memory_allocator = nullptr,
+                 CacheMetadataChargePolicy metadata_charge_policy = kDefaultCacheMetadataChargePolicy): 
                  hill_replacer_(buffer_size, _stats_interval, init_half, 
                  hit_point, max_points_bits, ghost_size_ratio, lambda,
                  simulator_ratio, top_ratio, delta_bound, update_equals_size,
-                 mru_threshold, minimal_update_size), capacity_(buffer_size), allocator_(memory_allocator){}
+                 mru_threshold, minimal_update_size), 
+                 capacity_(buffer_size), allocator_(memory_allocator),
+                 metadata_charge_policy_(metadata_charge_policy){}
 
     virtual Status Insert(
         const Slice& key, ObjectPtr obj, const CacheItemHelper* helper,
@@ -647,11 +680,17 @@ class HillCache
         auto &&k = key.ToString();
         // NOTE: 暂时用不到，这里把hash都设置为0
         HillHandle* e = CreateHandle(k, 0, obj, helper, charge);
+
         usage_ += e->total_charge;
         e->SetPriority(priority);
         e->SetInCache(true);
         auto r = hill_replacer_.access(k, e);
         if(r == RC::SUCCESS){
+            e->Ref();
+            if (handle != nullptr) {
+                e->Ref();
+                *handle = reinterpret_cast<Handle*>(e);
+            }
             return Status::OK();
         }
         return Status::Corruption("Error");
@@ -664,6 +703,8 @@ class HillCache
                             Statistics* stats = nullptr) override {
         auto &&k = key.ToString();
         auto h = hill_replacer_.get(k);
+        if(h != nullptr)
+            h->Ref();
         return reinterpret_cast<Handle*>(h);
     }
 
@@ -683,7 +724,8 @@ class HillCache
         // Free the entry here outside of mutex for performance reasons.
         if (must_free) {
             free(e);
-            // e->Free(allocator_.get());
+            // assert(usage_ >= e->total_charge);
+            usage_ -= e->total_charge;
         }
         return must_free;
     }
@@ -702,7 +744,7 @@ class HillCache
     }
 
     virtual size_t GetCharge(Handle* handle) const override {
-        return reinterpret_cast<const HillHandle*>(handle)->GetCharge(kFullChargeCacheMetadata);
+        return reinterpret_cast<const HillHandle*>(handle)->GetCharge(metadata_charge_policy_);
     }
 
     virtual void Erase(const Slice& key) {
@@ -745,9 +787,7 @@ class HillCache
     }
 
     virtual size_t GetUsage(Handle* handle) const override {
-        std::cout << "Unsupported!";
-        abort();
-        return 0;
+        return reinterpret_cast<const HillHandle*>(handle)->GetCharge(metadata_charge_policy_);
     }
 
     virtual size_t GetPinnedUsage() const override {
@@ -757,17 +797,16 @@ class HillCache
     }
 
     virtual const CacheItemHelper* GetCacheItemHelper(Handle* handle) const override {
-        std::cout << "Unsupported!";
-        abort();
-        return nullptr;
+        return reinterpret_cast<const HillHandle*>(handle)->helper;
     }
 
+    // FIXME: 
     virtual void ApplyToAllEntries(
         const std::function<void(const Slice& key, ObjectPtr obj, size_t charge,
                                 const CacheItemHelper* helper)>& callback,
         const ApplyToAllEntriesOptions& opts) override {
-        std::cout << "Unsupported!";
-        abort();
+        std::cout << "ApplyToAllEntries Unsupported!\n";
+        // abort();
     }
 
     virtual void EraseUnRefEntries() override {
@@ -788,9 +827,9 @@ class HillCache
         // If the cache is full, we'll have to release it.
         // It shouldn't happen very often though.
         HillHandle* e =
-            static_cast<HillHandle*>(malloc(sizeof(HillHandle)));
+            static_cast<HillHandle*>(malloc(sizeof(HillHandle) - 1 + key.size()));
 
-        e->key_ = key;
+        e->key_length = key.size();
         e->value = value;
         e->m_flags = 0;
         e->im_flags = 0;
@@ -798,7 +837,8 @@ class HillCache
         e->key_length = key.size();
         e->hash = hash;
         e->refs = 0;
-        e->CalcTotalCharge(charge, kFullChargeCacheMetadata);
+        memcpy(e->key_data, key.data(), key.size());
+        e->CalcTotalCharge(charge, metadata_charge_policy_);
 
         return e;
     }
@@ -807,15 +847,16 @@ class HillCache
     mutable DMutex mutex_;
     std::shared_ptr<MemoryAllocator> const allocator_;
     std::atomic<uint64_t> usage_;
+    CacheMetadataChargePolicy metadata_charge_policy_;
 };
 
 }
 
 std::shared_ptr<Cache> HillCacheOptions::MakeHillCache() const {
-    auto hill = std::make_shared<hill::HillCache>(buffer_size, stats_interval, init_half, 
+    auto hill = std::make_shared<hill::HillCache>(capacity, stats_interval, init_half, 
                  hit_point, max_points_bits, ghost_size_ratio, lambda,
                  simulator_ratio, top_ratio, delta_bound, update_equals_size,
-                 mru_threshold, minimal_update_size, allocator);
+                 mru_threshold, minimal_update_size, memory_allocator, metadata_charge_policy);
     return hill;
   }
 

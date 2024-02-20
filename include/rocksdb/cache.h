@@ -287,8 +287,7 @@ inline std::shared_ptr<Cache> NewLRUCache(const LRUCacheOptions& cache_opts) {
   return cache_opts.MakeSharedCache();
 }
 
-struct HillCacheOptions {
-  size_t buffer_size = 100ll<<20;
+struct HillCacheOptions : public ShardedCacheOptions {
   int32_t stats_interval;
   double init_half = 16.0f;
   double hit_point = 1.0f;
@@ -301,7 +300,6 @@ struct HillCacheOptions {
   bool update_equals_size = true;
   int32_t mru_threshold = 64;
   int32_t minimal_update_size = 10000;
-  std::shared_ptr<MemoryAllocator> const allocator = nullptr; // TODO: 这里要传入内存分配器
 
   std::shared_ptr<Cache> MakeHillCache() const;
 };

@@ -83,6 +83,10 @@ class WithCacheType : public TestCreateContext {
     }
     if (type == kHillCache) {
       HillCacheOptions hill_opt;
+      hill_opt.capacity = capacity;
+      if (modify_opts_fn) {
+        modify_opts_fn(hill_opt);
+      }
       return hill_opt.MakeHillCache();
     }
     assert(false);
