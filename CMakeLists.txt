@@ -65,7 +65,7 @@ if(CCACHE_FOUND)
 endif(CCACHE_FOUND)
 
 option(WITH_JEMALLOC "build with JeMalloc" OFF)
-option(WITH_LIBURING "build with liburing" ON)
+option(WITH_LIBURING "build with liburing" OFF)
 option(WITH_SNAPPY "build with SNAPPY" OFF)
 option(WITH_LZ4 "build with lz4" OFF)
 option(WITH_ZLIB "build with zlib" OFF)
@@ -207,6 +207,8 @@ else()
     endif()
   endif()
 endif()
+
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
 
 include(CheckCCompilerFlag)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(powerpc|ppc)64")
@@ -1267,6 +1269,7 @@ if(WITH_TESTS)
     list(APPEND TESTS
         cache/cache_reservation_manager_test.cc
         cache/cache_test.cc
+        cache/hill_test.cc
         cache/compressed_secondary_cache_test.cc
         cache/lru_cache_test.cc
         cache/tiered_secondary_cache_test.cc

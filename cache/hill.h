@@ -1,0 +1,824 @@
+//
+// Created by Yunfan Li on 2023/5/23.
+//
+
+#pragma once
+
+
+#include <sys/time.h>
+
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <iostream>
+#include <list>
+#include <map>
+#include <memory>
+#include <set>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+#include "rocksdb/advanced_cache.h"
+
+
+namespace ROCKSDB_NAMESPACE {
+
+namespace hill{
+
+namespace{
+
+const double EPSILON = 1e-10;
+
+enum class RC {
+    DEFAULT,
+    SUCCESS,
+    HIT,
+    MISS,
+    FAILED,
+    UNIMPLEMENT,
+};
+
+}
+class HillCache;   
+struct HillHandle;
+
+class Replacer {
+   public:
+    explicit Replacer(int32_t buffer_size, int32_t _stats_interval = -1)
+        : buffer_size_(buffer_size), stats_interval(_stats_interval) {
+        if (stats_interval != -1) {
+            enable_interval_stats_ = true;
+        }
+    }
+
+    virtual ~Replacer() = default;
+
+    std::string stats() {
+        std::stringstream s;
+        s << get_name() << ":"
+          << " buffer_size:" << buffer_size_ << " hit_count:" << hit_count_
+          << " miss_count:" << miss_count_ << " hit_rate:"
+          << (float)hit_count_ / (float)(hit_count_ + miss_count_) * 100 << "\%"
+          << std::endl;
+        return s.str();
+    }
+
+    virtual RC access(const std::string &key, HillHandle *h) = 0;
+    virtual std::string get_name() = 0;
+    virtual std::string get_configuration() { return {""}; }
+    virtual RC check_consistency() { return RC::DEFAULT; }
+    int32_t hit_count() const { return hit_count_; }
+    int32_t miss_count() const { return miss_count_; }
+    int32_t increase_hit_count() {
+        hit_count_ += 1;
+        return hit_count_;
+    }
+    int32_t increase_miss_count() {
+        miss_count_ += 1;
+        return miss_count_;
+    }
+
+   protected:
+    const int32_t buffer_size_;
+    int32_t hit_count_{};
+    int32_t miss_count_{};
+    bool enable_interval_stats_{false};
+    int32_t stats_interval{};
+    int ts{};
+   private:
+    friend class HillCache;
+};
+
+
+class HillSubReplacer {
+    struct HillEntry {
+        HillEntry() = default;
+        HillEntry(std::list<std::string>::iterator _key_iter, int _insert_level,
+                  int _insert_ts, bool _h_recency, HillHandle* h) {
+            this->key_iter = _key_iter;
+            this->insert_level = _insert_level;
+            this->insert_ts = _insert_ts;
+            this->h_recency = _h_recency;
+            this->h_ = h;
+        }
+
+        std::list<std::string>::iterator key_iter;
+        int insert_level{};
+        int insert_ts{};
+        bool h_recency{};  // 高时近性 说明在顶层LRU中
+        HillHandle* h_;
+    };
+
+   public:
+    HillSubReplacer(int32_t size, double init_half, double hit_points,
+                    int max_points_bits, double ghost_size_ratio,
+                    double top_ratio, int32_t _mru_threshold)
+        : size_(size),
+          init_half_(init_half),
+          hit_points_(hit_points),
+          max_points_bits_(max_points_bits),
+          ghost_size_ratio_(ghost_size_ratio),
+          top_ratio_(top_ratio),
+          mru_threshold_(_mru_threshold) {
+        cur_half_ = init_half_;
+        max_points_ = (1 << max_points_bits_) - 1;
+        ghost_size_ = size_ * ghost_size_ratio;
+        min_level_non_empty_ = max_points_;
+        real_lru_.resize(max_points_);
+        UpdateHalf(init_half_);
+        lru_size_ = std::max(1, (int)(top_ratio_ * size));
+        ml_size_ = size_ - lru_size_;
+    }
+
+    int Access(const std::string &key, HillHandle *h) {
+        bool hit = true;
+        int32_t inserted_level = hit_points_;
+        if (real_map_.count(key) == 0) {
+            // miss
+            hit = false;
+            interval_miss_count_++;
+            if (real_map_.size() == size_) {
+                Evict();
+            }
+            if (ghost_map_.count(key) != 0) {
+                // use level in ghost
+                std::list<std::string>::iterator hit_iter = ghost_map_[key].key_iter;
+                int level = GetCurrentLevel(ghost_map_[key]);
+                // erase key in ghost
+                ghost_lru_.erase(hit_iter);
+                ghost_map_.erase(key);
+                inserted_level += level;
+            }
+        } else {
+            // hit
+            interval_hit_count_++;
+            if (!real_map_[key].h_recency) {
+                h1++;
+                std::list<std::string>::iterator hit_iter = real_map_[key].key_iter;
+                int level =
+                    GetCurrentLevel(real_map_[key]);  // real_map_[key].second;
+                // erase key in real, use level in real
+                real_lru_[level].erase(hit_iter);
+                real_map_.erase(key);
+                inserted_level += level;
+                while (real_lru_[min_level_non_empty_].empty()) {
+                    min_level_non_empty_++;
+                }
+            } else {
+                h2++;
+                inserted_level += real_map_[key].insert_level;
+                top_lru_.erase(real_map_[key].key_iter);
+                real_map_.erase(key);
+            }
+        }
+        inserted_level = std::min(inserted_level, max_points_ - 1);
+
+        if (top_lru_.size() >= lru_size_) {
+            std::string _key = top_lru_.back();
+            int lvl = real_map_[_key].insert_level;
+            real_lru_[lvl].push_front(_key);
+            // NOTE: 这里应该是把key塞进去。
+            real_map_[_key] =
+                HillEntry(real_lru_[lvl].begin(), lvl, cur_ts_, false, h);
+            if (lvl < min_level_non_empty_) {
+                min_level_non_empty_ = lvl;
+            }
+            top_lru_.pop_back();
+        }
+        top_lru_.push_front(key);
+        // NOTE: 这里应该是把key塞进去。
+        real_map_[key] =
+            HillEntry(top_lru_.begin(), inserted_level, cur_ts_, true, h);
+        cur_ts_++;
+        if (cur_ts_ >= next_rolling_ts_) {
+            Rolling();
+        }
+        return hit;
+    }
+
+    HillHandle* Get(const std::string &key) {
+        auto entry = real_map_.find(key);
+        return entry->second.h_;
+    }
+    
+    void Evict() {
+        // evict key in real
+        std::string evict_key;
+        int evict_level;
+        int mx_ts = 0, sum = 0;
+        bool front = false;
+        if (min_level_non_empty_ <= mru_threshold_) {
+            front = true;
+            for (int i = min_level_non_empty_; i < max_points_; i++) {
+                if (real_lru_[i].empty()) {
+                    continue;
+                }
+                // MRU
+                if (real_map_[real_lru_[i].front()].insert_ts > mx_ts) {
+                    mx_ts = real_map_[real_lru_[i].front()].insert_ts;
+                    evict_key = real_lru_[i].front();
+                    evict_level = i;
+                }
+                sum += real_lru_[i].size();
+                break;
+            }
+        } else {
+            evict_key = real_lru_[min_level_non_empty_].back();
+            evict_level = min_level_non_empty_;
+        }
+        if (front) {
+            real_lru_[evict_level].pop_front();
+        } else {
+            real_lru_[evict_level].pop_back();
+        }
+        real_map_.erase(evict_key);
+        // move to ghost
+        if (ghost_size_ != 0 && evict_level != 0) {
+            // evict ghost
+            if (ghost_map_.size() >= ghost_size_) {
+                std::string _evict_key = ghost_lru_.back();
+                ghost_lru_.pop_back();
+                ghost_map_.erase(_evict_key);
+            }
+            // min_level_non_empty_ == evict_key's level
+            ghost_lru_.push_front(evict_key);
+            // NOTE: 这里应该不用写入value
+            ghost_map_[evict_key] =
+                HillEntry(ghost_lru_.begin(), evict_level, cur_ts_, false, nullptr);
+        }
+        while (real_lru_[min_level_non_empty_].empty()) {
+            min_level_non_empty_++;
+        }
+    }
+    
+    void Rolling() {
+        for (int i = 1; i < max_points_; i++) {
+            if (!real_lru_[i].empty()) {
+                if (mru_threshold_ != -1) {
+                    real_lru_[i / 2].splice(real_lru_[i / 2].end(),
+                                            real_lru_[i]);
+                } else {
+                    real_lru_[i / 2].splice(real_lru_[i / 2].begin(),
+                                            real_lru_[i]);
+                }
+                if (!real_lru_[i / 2].empty()) {
+                    min_level_non_empty_ =
+                        std::min(min_level_non_empty_, i / 2);
+                }
+            }
+        }
+        next_rolling_ts_ = cur_ts_ + cur_half_ * size_;
+        prev_rolling_ts_ = cur_ts_;
+        rolling_ts.push_back(cur_ts_);
+        if ((int32_t)rolling_ts.size() > max_points_bits_) {
+            rolling_ts.pop_front();
+        }
+    }
+    
+    void UpdateHalf(double cur_half) {
+        cur_half_ = cur_half;
+        if (cur_half_ < (double)1 / size_) {
+            cur_half_ = (double)1 / size_;
+        }
+        if (cur_half_ > 1e14 / size_) {
+            cur_half_ = 1e14 / size_;
+        }
+        next_rolling_ts_ = prev_rolling_ts_ + (int)(cur_half_ * size_);
+    }
+    
+    void ReportAndClear(int32_t &miss_count,
+                        int32_t &hit_count /*, int32_t &hit_top*/) {
+        miss_count = interval_miss_count_;
+        hit_count = interval_hit_count_;
+        //        hit_top = interval_hit_top_;
+        interval_miss_count_ = 0;
+        interval_hit_count_ = 0;
+        interval_hit_top_ = 0;
+    }
+    double GetCurHalf() const { return cur_half_; }
+    int h1{}, h2{};  // debug
+   private:
+    int32_t GetCurrentLevel(const HillEntry &status) {
+        int32_t est_level = status.insert_level;
+        if (rolling_ts.empty()) {
+            return est_level;
+        }
+        auto iter = rolling_ts.begin();
+        for (size_t i = 0; i < rolling_ts.size(); i++) {
+            if (status.insert_ts < *iter) {
+                est_level >>= rolling_ts.size() - i;
+                break;
+            }
+            iter++;
+        }
+        return est_level;
+    }
+    uint64_t size_;
+    double init_half_;  // 初始半衰期系数
+    double cur_half_;
+
+   private:
+    // 当前半衰期系数
+    uint64_t lru_size_;         // LRU部分大小
+    uint64_t ml_size_;          // RGC部分大小
+    double hit_points_;        // 命中后得分
+    int32_t max_points_bits_;  // 最高得分为 (1 << max_points_bits_) - 1
+    int32_t max_points_;       // 最高得分
+    int32_t min_level_non_empty_;  // 当前最小的得分
+    double ghost_size_ratio_;      // 虚缓存大小比例
+    uint64_t ghost_size_;
+    int32_t interval_hit_count_ = 0;       // 统计区间命中次数
+    int32_t interval_miss_count_ = 0;      // 统计区间为命中次数
+    int32_t interval_hit_top_ = 0;         // 在top上命中次数
+    int32_t next_rolling_ts_ = INT32_MAX;  // 下一次滚动的时间戳
+    int32_t cur_ts_ = 0;                   // 当前时间戳
+    int32_t prev_rolling_ts_ = 0;
+    std::vector<std::list<std::string>> real_lru_;
+    std::list<std::string> ghost_lru_;
+    std::list<std::string> top_lru_;
+    std::unordered_map<std::string, HillEntry> real_map_, ghost_map_;
+    std::list<int32_t> rolling_ts;
+    double top_ratio_;
+    int32_t mru_threshold_;
+    friend class HillCache;
+};
+
+struct HillHandle {
+  Cache::ObjectPtr value;
+  const Cache::CacheItemHelper* helper;
+  size_t total_charge;  // TODO(opt): Only allow uint32_t?
+  size_t key_length;
+  uint32_t hash;
+  // The number of external refs to this entry. The cache itself is not counted.
+  uint32_t refs;
+
+  std::string key_;
+
+  Slice key() const { return Slice(key_); }
+
+  // For HandleImpl concept
+  uint32_t GetHash() const { return hash; }
+
+  // Increase the reference count by 1.
+  void Ref() { refs++; }
+
+  // Just reduce the reference count by 1. Return true if it was last reference.
+  bool Unref() {
+    assert(refs > 0);
+    refs--;
+    return refs == 0;
+  }
+
+  uint8_t m_flags;
+  enum MFlags : uint8_t {
+    // Whether this entry is referenced by the hash table.
+    M_IN_CACHE = (1 << 0),
+    // Whether this entry has had any lookups (hits).
+    M_HAS_HIT = (1 << 1),
+    // Whether this entry is in high-pri pool.
+    M_IN_HIGH_PRI_POOL = (1 << 2),
+    // Whether this entry is in low-pri pool.
+    M_IN_LOW_PRI_POOL = (1 << 3),
+  };
+
+  // "Immutable" flags - only set in single-threaded context and then
+  // can be accessed without mutex
+  uint8_t im_flags;
+  enum ImFlags : uint8_t {
+    // Whether this entry is high priority entry.
+    IM_IS_HIGH_PRI = (1 << 0),
+    // Whether this entry is low priority entry.
+    IM_IS_LOW_PRI = (1 << 1),
+    // Marks result handles that should not be inserted into cache
+    IM_IS_STANDALONE = (1 << 2),
+  };
+
+  // Return true if there are external refs, false otherwise.
+  bool HasRefs() const { return refs > 0; }
+
+  bool InCache() const { return m_flags & M_IN_CACHE; }
+  bool IsHighPri() const { return im_flags & IM_IS_HIGH_PRI; }
+  bool InHighPriPool() const { return m_flags & M_IN_HIGH_PRI_POOL; }
+  bool IsLowPri() const { return im_flags & IM_IS_LOW_PRI; }
+  bool InLowPriPool() const { return m_flags & M_IN_LOW_PRI_POOL; }
+  bool HasHit() const { return m_flags & M_HAS_HIT; }
+  bool IsStandalone() const { return im_flags & IM_IS_STANDALONE; }
+
+  void SetInCache(bool in_cache) {
+    if (in_cache) {
+      m_flags |= M_IN_CACHE;
+    } else {
+      m_flags &= ~M_IN_CACHE;
+    }
+  }
+
+  void SetPriority(Cache::Priority priority) {
+    if (priority == Cache::Priority::HIGH) {
+      im_flags |= IM_IS_HIGH_PRI;
+      im_flags &= ~IM_IS_LOW_PRI;
+    } else if (priority == Cache::Priority::LOW) {
+      im_flags &= ~IM_IS_HIGH_PRI;
+      im_flags |= IM_IS_LOW_PRI;
+    } else {
+      im_flags &= ~IM_IS_HIGH_PRI;
+      im_flags &= ~IM_IS_LOW_PRI;
+    }
+  }
+
+  void SetInHighPriPool(bool in_high_pri_pool) {
+    if (in_high_pri_pool) {
+      m_flags |= M_IN_HIGH_PRI_POOL;
+    } else {
+      m_flags &= ~M_IN_HIGH_PRI_POOL;
+    }
+  }
+
+  void SetInLowPriPool(bool in_low_pri_pool) {
+    if (in_low_pri_pool) {
+      m_flags |= M_IN_LOW_PRI_POOL;
+    } else {
+      m_flags &= ~M_IN_LOW_PRI_POOL;
+    }
+  }
+
+  void SetHit() { m_flags |= M_HAS_HIT; }
+
+  void SetIsStandalone(bool is_standalone) {
+    if (is_standalone) {
+      im_flags |= IM_IS_STANDALONE;
+    } else {
+      im_flags &= ~IM_IS_STANDALONE;
+    }
+  }
+
+  void Free(MemoryAllocator* allocator) {
+    assert(refs == 0);
+    assert(helper);
+    if (helper->del_cb) {
+      helper->del_cb(value, allocator);
+    }
+
+    free(this);
+  }
+
+  inline size_t CalcuMetaCharge(
+      CacheMetadataChargePolicy metadata_charge_policy) const {
+    if (metadata_charge_policy != kFullChargeCacheMetadata) {
+      return 0;
+    } else {
+#ifdef ROCKSDB_MALLOC_USABLE_SIZE
+      return malloc_usable_size(
+          const_cast<void*>(static_cast<const void*>(this)));
+#else
+      // This is the size that is used when a new handle is created.
+      return sizeof(LRUHandle) - 1 + key_length;
+#endif
+    }
+  }
+
+  // Calculate the memory usage by metadata.
+  inline void CalcTotalCharge(
+      size_t charge, CacheMetadataChargePolicy metadata_charge_policy) {
+    total_charge = charge + CalcuMetaCharge(metadata_charge_policy);
+  }
+
+  inline size_t GetCharge(
+      CacheMetadataChargePolicy metadata_charge_policy) const {
+    size_t meta_charge = CalcuMetaCharge(metadata_charge_policy);
+    assert(total_charge >= meta_charge);
+    return total_charge - meta_charge;
+  }
+};
+
+
+class HillReplacer : public Replacer {
+   public:
+    HillReplacer(int32_t buffer_size, int32_t _stats_interval = 1000,
+                 double init_half = 16.0f, double hit_point = 1.0f,
+                 int32_t max_points_bits = 6, double ghost_size_ratio = 4.0f,
+                 double lambda = 1.0f, double simulator_ratio = 0.67f,
+                 double top_ratio = 0.05f, double delta_bound = 0.01f,
+                 bool update_equals_size = true, int32_t mru_threshold = 64,
+                 int32_t minimal_update_size = 10000)
+        : Replacer(buffer_size, _stats_interval),
+          replacer_r_(buffer_size, init_half, hit_point, max_points_bits,
+                      ghost_size_ratio, top_ratio, mru_threshold),
+          replacer_s_(buffer_size, init_half * simulator_ratio, hit_point,
+                      max_points_bits, ghost_size_ratio, top_ratio,
+                      mru_threshold),
+          lambda_(lambda),
+          init_half_(init_half),
+          simulator_ratio_(simulator_ratio),
+          delta_bound_(delta_bound) {
+        update_interval_ = std::max(100, buffer_size);
+        update_interval_ = std::min(minimal_update_size, buffer_size);
+    }
+
+    RC access(const std::string &key, HillHandle *h) {
+        ts++;
+        if (replacer_r_.Access(key, h)) {
+            increase_hit_count();
+            hit_recorder.push_back(1);
+            recorder_hit_count++;
+        } else {
+            increase_miss_count();
+            hit_recorder.push_back(0);
+        }
+
+        if (hit_recorder.size() >= 500000) {
+            if (hit_recorder.front() == 1) {
+                recorder_hit_count--;
+            }
+            hit_recorder.pop_front();
+        }
+
+        replacer_s_.Access(key, h);
+        if (ts % update_interval_ == 0) {
+            int32_t r_mc, r_hc;
+            int32_t s_mc, s_hc;
+            replacer_r_.ReportAndClear(r_mc, r_hc);
+            replacer_s_.ReportAndClear(s_mc, s_hc);
+            double r_hr = (double)r_hc / (r_mc + r_hc);
+            double s_hr = (double)s_hc / (s_mc + s_hc);
+            double cur_half = replacer_r_.GetCurHalf();
+            if (r_hr != 0 && s_hr != 0) {
+                if (fabs(s_hr - r_hr) >= EPSILON) {
+                    stable_count_ = 0;
+                    if (s_hr > r_hr) {
+                        double delta_ratio = (s_hr / r_hr - 1);
+                        if (delta_ratio > delta_bound_) {
+                            delta_ratio = delta_bound_;
+                        }
+                        replacer_r_.UpdateHalf(cur_half /
+                                            (1 + delta_ratio * lambda_));
+                    } else {
+                        double delta_ratio = (r_hr / s_hr - 1);
+                        if (delta_ratio > delta_bound_) {
+                            delta_ratio = delta_bound_;
+                        }
+                        replacer_r_.UpdateHalf(cur_half *
+                                            (1 + delta_ratio * lambda_));
+                    }
+                } else {
+                    stable_count_++;
+                    if (stable_count_ == 5) {
+                        double delta_ratio = 0.1;
+                        if (delta_ratio > delta_bound_) {
+                            delta_ratio = delta_bound_;
+                        }
+                        if (cur_half < init_half_) {
+                            replacer_r_.UpdateHalf(cur_half *
+                                                (1 + delta_ratio * lambda_));
+                        } else {
+                            replacer_r_.UpdateHalf(cur_half /
+                                                (1 + delta_ratio * lambda_));
+                        }
+                        stable_count_ = 0;
+                    }
+                }
+            }
+        }
+        replacer_s_.UpdateHalf(replacer_r_.GetCurHalf() * simulator_ratio_);
+        if (enable_interval_stats_ && ts % stats_interval == 0) {
+            std::cout << stats();
+        }
+
+        return RC::SUCCESS;
+    }
+
+    HillHandle* get(const std::string &key) {
+        auto h = replacer_r_.Get(key);
+        if(h != nullptr) {
+            return h;
+        }
+        return replacer_s_.Get(key);
+    }
+    
+    std::string get_name() { return {"Hill-Cache"}; }
+
+   private:
+    friend class HillCache;
+    HillSubReplacer replacer_r_;
+    HillSubReplacer replacer_s_;
+    double lambda_;            // 学习率
+    int32_t update_interval_;  // 更新间隔
+    int32_t stable_count_{};
+    double init_half_;
+    double simulator_ratio_;
+    double delta_bound_;
+    std::list<int32_t> hit_recorder;
+    int32_t recorder_hit_count{};
+};
+
+
+class HillCache
+#ifdef NDEBUG
+    final
+#endif
+    : public Cache {
+ public:  // functions
+    virtual const char* Name() const override {
+        return "HillCache";
+    }
+
+    HillCache(uint64_t buffer_size, int32_t _stats_interval = 1000,
+                 double init_half = 16.0f, double hit_point = 1.0f,
+                 int32_t max_points_bits = 6, double ghost_size_ratio = 4.0f,
+                 double lambda = 1.0f, double simulator_ratio = 0.67f,
+                 double top_ratio = 0.05f, double delta_bound = 0.01f,
+                 bool update_equals_size = true, int32_t mru_threshold = 64,
+                 int32_t minimal_update_size = 10000, std::shared_ptr<MemoryAllocator> memory_allocator = nullptr): 
+                 hill_replacer_(buffer_size, _stats_interval, init_half, 
+                 hit_point, max_points_bits, ghost_size_ratio, lambda,
+                 simulator_ratio, top_ratio, delta_bound, update_equals_size,
+                 mru_threshold, minimal_update_size), capacity_(buffer_size), allocator_(memory_allocator){}
+
+    virtual Status Insert(
+        const Slice& key, ObjectPtr obj, const CacheItemHelper* helper,
+        size_t charge, Handle** handle = nullptr,
+        Priority priority = Priority::LOW, const Slice& compressed = Slice(),
+        CompressionType type = CompressionType::kNoCompression) override {
+        // 
+        auto &&k = key.ToString();
+        // NOTE: 暂时用不到，这里把hash都设置为0
+        HillHandle* e = CreateHandle(k, 0, obj, helper, charge);
+        usage_ += e->total_charge;
+        e->SetPriority(priority);
+        e->SetInCache(true);
+        auto r = hill_replacer_.access(k, e);
+        if(r == RC::SUCCESS){
+            return Status::OK();
+        }
+        return Status::Corruption("Error");
+    }
+
+    virtual Handle* Lookup(const Slice& key,
+                            const CacheItemHelper* helper = nullptr,
+                            CreateContext* create_context = nullptr,
+                            Priority priority = Priority::LOW,
+                            Statistics* stats = nullptr) override {
+        auto &&k = key.ToString();
+        auto h = hill_replacer_.get(k);
+        return reinterpret_cast<Handle*>(h);
+    }
+
+    using Cache::Release;
+    bool Release(Handle* handle, bool erase_if_last_ref) override {
+        auto e = reinterpret_cast<HillHandle*>(handle);
+        if (e == nullptr) {
+            return false;
+        }
+        bool must_free;
+        {
+            DMutexLock l(mutex_);
+            must_free = e->Unref();
+            // was_in_cache = e->InCache();
+        }
+
+        // Free the entry here outside of mutex for performance reasons.
+        if (must_free) {
+            free(e);
+            // e->Free(allocator_.get());
+        }
+        return must_free;
+    }
+
+    virtual bool Ref(Handle* handle) override {
+        DMutexLock l(mutex_);
+        auto h = reinterpret_cast<HillHandle*>(handle);
+        assert(h->HasRefs());
+        h->Ref();
+        return true;
+    }
+
+    virtual ObjectPtr Value(Handle* handle) override {
+        auto h = reinterpret_cast<const HillHandle*>(handle);
+        return h->value;
+    }
+
+    virtual size_t GetCharge(Handle* handle) const override {
+        return reinterpret_cast<const HillHandle*>(handle)->GetCharge(kFullChargeCacheMetadata);
+    }
+
+    virtual void Erase(const Slice& key) {
+        std::cout << "Unsupported!";
+        abort();
+    };
+
+    virtual Handle* CreateStandalone(const Slice& key, ObjectPtr obj,
+                                    const CacheItemHelper* helper, size_t charge,
+                                    bool allow_uncharged) override {
+        std::cout << "Unsupported!";
+        abort();
+        return nullptr;
+    }
+
+    virtual uint64_t NewId() override {return 0;}
+
+    virtual void SetCapacity(size_t capacity) override {
+        std::cout << "Unsupported!";
+        abort();
+    }
+
+    virtual void SetStrictCapacityLimit(bool strict_capacity_limit) override {
+        std::cout << "Unsupported!";
+        abort();
+    }
+
+    virtual bool HasStrictCapacityLimit() const override {
+        std::cout << "Unsupported!";
+        abort();
+        return false;
+    }
+
+    virtual size_t GetCapacity() const override {
+        return capacity_;
+    }
+
+    virtual size_t GetUsage() const override {
+        return usage_;
+    }
+
+    virtual size_t GetUsage(Handle* handle) const override {
+        std::cout << "Unsupported!";
+        abort();
+        return 0;
+    }
+
+    virtual size_t GetPinnedUsage() const override {
+        std::cout << "Unsupported!";
+        abort();
+        return 0;
+    }
+
+    virtual const CacheItemHelper* GetCacheItemHelper(Handle* handle) const override {
+        std::cout << "Unsupported!";
+        abort();
+        return nullptr;
+    }
+
+    virtual void ApplyToAllEntries(
+        const std::function<void(const Slice& key, ObjectPtr obj, size_t charge,
+                                const CacheItemHelper* helper)>& callback,
+        const ApplyToAllEntriesOptions& opts) override {
+        std::cout << "Unsupported!";
+        abort();
+    }
+
+    virtual void EraseUnRefEntries() override {
+        std::cout << "Unsupporteded!";
+        abort();
+    }
+
+   private:
+    HillHandle* CreateHandle(const std::string& key, uint32_t hash,
+                                       Cache::ObjectPtr value,
+                                       const Cache::CacheItemHelper* helper,
+                                       size_t charge) {
+        assert(helper);
+        // value == nullptr is reserved for indicating failure in SecondaryCache
+        assert(!(helper->IsSecondaryCacheCompatible() && value == nullptr));
+
+        // Allocate the memory here outside of the mutex.
+        // If the cache is full, we'll have to release it.
+        // It shouldn't happen very often though.
+        HillHandle* e =
+            static_cast<HillHandle*>(malloc(sizeof(HillHandle)));
+
+        e->key_ = key;
+        e->value = value;
+        e->m_flags = 0;
+        e->im_flags = 0;
+        e->helper = helper;
+        e->key_length = key.size();
+        e->hash = hash;
+        e->refs = 0;
+        e->CalcTotalCharge(charge, kFullChargeCacheMetadata);
+
+        return e;
+    }
+    HillReplacer hill_replacer_;
+    uint64_t capacity_;
+    mutable DMutex mutex_;
+    std::shared_ptr<MemoryAllocator> const allocator_;
+    std::atomic<uint64_t> usage_;
+};
+
+}
+
+std::shared_ptr<Cache> HillCacheOptions::MakeHillCache() const {
+    auto hill = std::make_shared<hill::HillCache>(buffer_size, stats_interval, init_half, 
+                 hit_point, max_points_bits, ghost_size_ratio, lambda,
+                 simulator_ratio, top_ratio, delta_bound, update_equals_size,
+                 mru_threshold, minimal_update_size, allocator);
+    return hill;
+  }
+
+}
+
+

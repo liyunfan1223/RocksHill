@@ -44,6 +44,7 @@ class WithCacheType : public TestCreateContext {
   static constexpr auto kLRU = "lru";
   static constexpr auto kFixedHyperClock = "fixed_hyper_clock";
   static constexpr auto kAutoHyperClock = "auto_hyper_clock";
+  static constexpr auto kHillCache = "hill_cache";
 
   // For options other than capacity
   size_t estimated_value_size_ = 1;
@@ -79,6 +80,10 @@ class WithCacheType : public TestCreateContext {
         modify_opts_fn(hc_opts);
       }
       return hc_opts.MakeSharedCache();
+    }
+    if (type == kHillCache) {
+      HillCacheOptions hill_opt;
+      return hill_opt.MakeHillCache();
     }
     assert(false);
     return nullptr;
@@ -121,10 +126,11 @@ class WithCacheTypeParam : public WithCacheType,
 constexpr auto kLRU = WithCacheType::kLRU;
 constexpr auto kFixedHyperClock = WithCacheType::kFixedHyperClock;
 constexpr auto kAutoHyperClock = WithCacheType::kAutoHyperClock;
+constexpr auto kHillCache = WithCacheType::kHillCache;
 
 inline auto GetTestingCacheTypes() {
   return testing::Values(std::string(kLRU), std::string(kFixedHyperClock),
-                         std::string(kAutoHyperClock));
+                         std::string(kAutoHyperClock), std::string(kHillCache));
 }
 
 }  // namespace secondary_cache_test_util
