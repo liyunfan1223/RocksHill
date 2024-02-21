@@ -208,7 +208,7 @@ else()
   endif()
 endif()
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
+# set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
 
 include(CheckCCompilerFlag)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(powerpc|ppc)64")
@@ -631,6 +631,7 @@ set(SOURCES
         cache/clock_cache.cc
         cache/compressed_secondary_cache.cc
         cache/lru_cache.cc
+        cache/hill.cc
         cache/secondary_cache.cc
         cache/secondary_cache_adapter.cc
         cache/sharded_cache.cc

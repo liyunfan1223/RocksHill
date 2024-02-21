@@ -24,7 +24,8 @@
 #include <vector>
 
 #include "rocksdb/advanced_cache.h"
-
+#include "util/distributed_mutex.h"
+#include "port/malloc.h"
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -654,7 +655,7 @@ class HillCache
     virtual const char* Name() const override {
         return "HillCache";
     }
-
+    
     HillCache(uint64_t buffer_size, int32_t _stats_interval = 1000,
                  double init_half = 16.0f, double hit_point = 1.0f,
                  int32_t max_points_bits = 6, double ghost_size_ratio = 4.0f,
@@ -747,7 +748,7 @@ class HillCache
         return reinterpret_cast<const HillHandle*>(handle)->GetCharge(metadata_charge_policy_);
     }
 
-    virtual void Erase(const Slice& key) {
+    virtual void Erase(const Slice& key) override {
         std::cout << "Unsupported!";
         abort();
     };
@@ -851,14 +852,6 @@ class HillCache
 };
 
 }
-
-std::shared_ptr<Cache> HillCacheOptions::MakeHillCache() const {
-    auto hill = std::make_shared<hill::HillCache>(capacity, stats_interval, init_half, 
-                 hit_point, max_points_bits, ghost_size_ratio, lambda,
-                 simulator_ratio, top_ratio, delta_bound, update_equals_size,
-                 mru_threshold, minimal_update_size, memory_allocator, metadata_charge_policy);
-    return hill;
-  }
 
 }
 
