@@ -1,5 +1,6 @@
 #include "cache/hill.h"
 
+#include <cstdint>
 #include <forward_list>
 #include <functional>
 #include <iostream>
@@ -144,9 +145,11 @@ class CacheTest : public testing::Test,
 
   void Erase(int key) { Erase(cache_, key); }
 
-  void DestroyDB() {
+  static constexpr uint64_t kKilobyte = 1024;
+  static constexpr uint64_t kMegabyte = kKilobyte * kKilobyte;
+  static constexpr uint64_t kGigabyte = kKilobyte * kMegabyte;
 
-  }
+  static constexpr uint64_t kDefaultBlockSize = 4 * kKilobyte;
 };
 
 const Cache::CacheItemHelper CacheTest::kHelper{CacheEntryRole::kMisc,
@@ -310,7 +313,7 @@ TEST_P(CacheTest, InRocksDBBasicHill) {
   // NOTE: 创建HillCache
   HillCacheOptions hill_opt;
   // hill_opt.capacity = 500ul << 1;
-  hill_opt.capacity = (1 << 20) / 4096;
+  hill_opt.capacity = 16 * kMegabyte / kDefaultBlockSize;
   std::shared_ptr<Cache> cache = hill_opt.MakeHillCache();
   BlockBasedTableOptions table_options;
   table_options.block_cache = cache;
@@ -353,7 +356,7 @@ TEST_P(CacheTest, InRocksDBBasicLRU) {
 
   LRUCacheOptions lru_opt;
   // hill_opt.capacity = 500ul << 1;
-  lru_opt.capacity = 1 << 20;
+  lru_opt.capacity = 16 * kMegabyte;
   lru_opt.num_shard_bits = 0;
   std::shared_ptr<Cache> cache = lru_opt.MakeSharedCache();
   BlockBasedTableOptions table_options;
