@@ -1,4 +1,4 @@
-#include "rocksdb/cache.h"
+#include "cache/hill.h"
 
 #include <forward_list>
 #include <functional>
@@ -8,22 +8,20 @@
 
 #include "cache/lru_cache.h"
 #include "cache/typed_cache.h"
-#include "cache/hill.h"
 #include "port/stack_trace.h"
-#include "test_util/secondary_cache_test_util.h"
-#include "test_util/testharness.h"
-#include "util/coding.h"
-#include "util/hash_containers.h"
-#include "util/string_util.h"
+#include "rocksdb/cache.h"
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
 #include "rocksdb/slice.h"
 #include "rocksdb/table.h"
 #include "rocksdb/utilities/options_util.h"
-
+#include "test_util/secondary_cache_test_util.h"
+#include "test_util/testharness.h"
+#include "util/coding.h"
+#include "util/hash_containers.h"
+#include "util/string_util.h"
 
 namespace ROCKSDB_NAMESPACE {
-
 
 namespace {
 
@@ -92,9 +90,7 @@ class CacheTest : public testing::Test,
   std::vector<int> deleted_values_;
   std::shared_ptr<Cache> cache_;
 
-  CacheTest()
-      : cache_(NewCache(kCacheSize, kNumShardBits, false)) {
-    
+  CacheTest() : cache_(NewCache(kCacheSize, kNumShardBits, false)) {
     current_ = this;
     type_ = GetParam();
   }
@@ -261,10 +257,12 @@ TEST_P(CacheTest, InRocksDB) {
   options.OptimizeLevelStyleCompaction();
   // create the DB if it's not already present
   options.create_if_missing = true;
+  options.use_direct_reads = true;
+  options.use_direct_io_for_flush_and_compaction = true;
 
   // NOTE: 创建HillCache
   HillCacheOptions hill_opt;
-  hill_opt.capacity = 500ul << 20;
+  hill_opt.capacity = 500ul << 1;
   std::shared_ptr<Cache> cache = hill_opt.MakeHillCache();
   BlockBasedTableOptions table_options;
   table_options.block_cache = cache;
@@ -281,7 +279,7 @@ TEST_P(CacheTest, InRocksDB) {
     ASSERT_OK(s);
   }
   db->Flush(FlushOptions());
-  
+
   std::string value;
   for (size_t i = 0; i < key_num; i++) {
     s = db->Get(ReadOptions(), std::to_string(i), &value);
@@ -292,11 +290,10 @@ TEST_P(CacheTest, InRocksDB) {
   delete db;
 }
 
-
 INSTANTIATE_TEST_CASE_P(CacheTestInstance, CacheTest,
                         testing::Values(secondary_cache_test_util::kHillCache));
 
-}
+}  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {
   ROCKSDB_NAMESPACE::port::InstallStackTraceHandler();

@@ -288,7 +288,7 @@ inline std::shared_ptr<Cache> NewLRUCache(const LRUCacheOptions& cache_opts) {
 }
 
 struct HillCacheOptions : public ShardedCacheOptions {
-  int32_t stats_interval;
+  int32_t stats_interval = -1;
   double init_half = 16.0f;
   double hit_point = 1.0f;
   int32_t max_points_bits = 6;
