@@ -143,6 +143,10 @@ class CacheTest : public testing::Test,
   }
 
   void Erase(int key) { Erase(cache_, key); }
+
+  void DestroyDB() {
+
+  }
 };
 
 const Cache::CacheItemHelper CacheTest::kHelper{CacheEntryRole::kMisc,
@@ -262,7 +266,8 @@ TEST_P(CacheTest, InRocksDB) {
 
   // NOTE: 创建HillCache
   HillCacheOptions hill_opt;
-  hill_opt.capacity = 500ul << 1;
+  // hill_opt.capacity = 500ul << 1;
+  hill_opt.capacity = 500ul << 4;
   std::shared_ptr<Cache> cache = hill_opt.MakeHillCache();
   BlockBasedTableOptions table_options;
   table_options.block_cache = cache;
@@ -270,6 +275,94 @@ TEST_P(CacheTest, InRocksDB) {
 
   // open DB
   std::string kDBPath = "rocksdb_simple_example";
+  rocksdb::DestroyDB(kDBPath, rocksdb::Options());
+  Status s = DB::Open(options, kDBPath, &db);
+  assert(s.ok());
+
+  size_t key_num = 10000;
+  for (size_t i = 0; i < key_num; i++) {
+    s = db->Put(WriteOptions(), std::to_string(i), std::to_string(i));
+    ASSERT_OK(s);
+  }
+  db->Flush(FlushOptions());
+
+  std::string value;
+  for (size_t i = 0; i < key_num; i++) {
+    s = db->Get(ReadOptions(), std::to_string(i), &value);
+    ASSERT_OK(s);
+    ASSERT_EQ(value, std::to_string(i));
+  }
+
+  delete db;
+}
+
+TEST_P(CacheTest, InRocksDBBasicHill) {
+  DB* db;
+  Options options;
+  // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
+  options.IncreaseParallelism();
+  options.OptimizeLevelStyleCompaction();
+  // create the DB if it's not already present
+  options.create_if_missing = true;
+  options.use_direct_reads = true;
+  options.use_direct_io_for_flush_and_compaction = true;
+
+  // NOTE: 创建HillCache
+  HillCacheOptions hill_opt;
+  // hill_opt.capacity = 500ul << 1;
+  hill_opt.capacity = (1 << 20) / 4096;
+  std::shared_ptr<Cache> cache = hill_opt.MakeHillCache();
+  BlockBasedTableOptions table_options;
+  table_options.block_cache = cache;
+  options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+
+  // open DB
+  std::string kDBPath = "rocksdb_simple_example";
+  rocksdb::DestroyDB(kDBPath, rocksdb::Options());
+  Status s = DB::Open(options, kDBPath, &db);
+  assert(s.ok());
+
+  size_t key_num = 10000;
+  for (size_t i = 0; i < key_num; i++) {
+    s = db->Put(WriteOptions(), std::to_string(i), std::to_string(i));
+    ASSERT_OK(s);
+  }
+  db->Flush(FlushOptions());
+
+  std::string value;
+  for (size_t i = 0; i < key_num; i++) {
+    s = db->Get(ReadOptions(), std::to_string(i), &value);
+    ASSERT_OK(s);
+    ASSERT_EQ(value, std::to_string(i));
+  }
+
+  delete db;
+}
+
+// NOTE: 测试在RocksDB里的HillCache
+TEST_P(CacheTest, InRocksDBBasicLRU) {
+  DB* db;
+  Options options;
+  // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
+  options.IncreaseParallelism();
+  options.OptimizeLevelStyleCompaction();
+  // create the DB if it's not already present
+  options.create_if_missing = true;
+  options.use_direct_reads = true;
+  options.use_direct_io_for_flush_and_compaction = true;
+
+  LRUCacheOptions lru_opt;
+  // hill_opt.capacity = 500ul << 1;
+  lru_opt.capacity = 1 << 20;
+  lru_opt.num_shard_bits = 0;
+  std::shared_ptr<Cache> cache = lru_opt.MakeSharedCache();
+  BlockBasedTableOptions table_options;
+  table_options.block_cache = cache;
+  options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+
+  // open DB
+  std::string kDBPath = "rocksdb_simple_example";
+  rocksdb::DestroyDB(kDBPath, rocksdb::Options());
   Status s = DB::Open(options, kDBPath, &db);
   assert(s.ok());
 

@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <iostream>
 
 #include "cache/secondary_cache_adapter.h"
 #include "monitoring/perf_context_imp.h"
@@ -433,6 +434,7 @@ LRUHandle* LRUCacheShard::Lookup(const Slice& key, uint32_t hash,
                                  Cache::Priority /*priority*/,
                                  Statistics* /*stats*/) {
   DMutexLock l(mutex_);
+  // std::cout << "Lookup: " << Slice(key).ToString(true) << "\n";
   LRUHandle* e = table_.Lookup(key, hash);
   if (e != nullptr) {
     assert(e->InCache());
@@ -550,6 +552,7 @@ Status LRUCacheShard::Insert(const Slice& key, uint32_t hash,
                              const Cache::CacheItemHelper* helper,
                              size_t charge, LRUHandle** handle,
                              Cache::Priority priority) {
+  // std::cout << "Insert: " << Slice(key).ToString(true) << "\n";
   LRUHandle* e = CreateHandle(key, hash, value, helper, charge);
   e->SetPriority(priority);
   e->SetInCache(true);

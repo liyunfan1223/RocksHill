@@ -4,11 +4,13 @@
 
 #pragma once
 
+#include <rocksdb/status.h>
 #include <sys/time.h>
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -22,10 +24,11 @@
 #include <unordered_set>
 #include <vector>
 
+#include "cache/sharded_cache.h"
 #include "port/malloc.h"
 #include "rocksdb/advanced_cache.h"
+#include "util/autovector.h"
 #include "util/distributed_mutex.h"
-
 namespace ROCKSDB_NAMESPACE {
 
 namespace hill {
@@ -277,7 +280,7 @@ class HillSubReplacer {
         init_half_(init_half),
         hit_points_(hit_points),
         max_points_bits_(max_points_bits),
-        ghost_size_ratio_(ghost_size_ratio),
+        // ghost_size_ratio_(ghost_size_ratio),
         top_ratio_(top_ratio),
         mru_threshold_(_mru_threshold) {
     cur_half_ = init_half_;
@@ -374,27 +377,28 @@ class HillSubReplacer {
 
   HillHandle* Get(const std::string& key) {
     auto entry = real_map_.find(key);
+    // std::cout << "Get: " << Slice(key).ToString(true) << '\n';
+    // std::cout << "Get: " << Slice(key).ToString(true) << "\n";
+    //           << "Key out: " << Slice(entry->first).ToString(true)
+    //           << ", Handle address: " <<
+    //           reinterpret_cast<std::uintptr_t>(entry->second.h_)
+    //           << ", Key in handle: " << Slice(entry->second.h_->key_data,
+    //           entry->second.h_->key_length).ToString(true)
+    //           << ", Value address: " <<
+    //           reinterpret_cast<std::uintptr_t>(entry->second.h_->value) <<
+    //           "\n";
     if (entry != real_map_.end()) {
-      // std::cout << "Get: \nKey in: " << Slice(key).ToString(true) << "\n"
-      //           << "Key out: " << Slice(entry->first).ToString(true)
-      //           << ", Handle address: " <<
-      //           reinterpret_cast<std::uintptr_t>(entry->second.h_)
-      //           << ", Key in handle: " << Slice(entry->second.h_->key_data,
-      //           entry->second.h_->key_length).ToString(true)
-      //           << ", Value address: " <<
-      //           reinterpret_cast<std::uintptr_t>(entry->second.h_->value) <<
-      //           "\n";
       return entry->second.h_;
     } else {
       return nullptr;
     }
   }
 
-  void Evict() {
+  void Evict(HillHandle** evicted_handle = nullptr) {
     // evict key in real
     std::string evict_key;
     int evict_level;
-    int mx_ts = 0, sum = 0;
+    int mx_ts = 0;
     bool front = false;
     if (min_level_non_empty_ <= mru_threshold_) {
       front = true;
@@ -408,7 +412,6 @@ class HillSubReplacer {
           evict_key = real_lru_[i].front();
           evict_level = i;
         }
-        sum += real_lru_[i].size();
         break;
       }
     } else {
@@ -419,6 +422,9 @@ class HillSubReplacer {
       real_lru_[evict_level].pop_front();
     } else {
       real_lru_[evict_level].pop_back();
+    }
+    if (evicted_handle) {
+      *evicted_handle = real_map_[evict_key].h_;
     }
     real_map_.erase(evict_key);
     // move to ghost
@@ -481,6 +487,7 @@ class HillSubReplacer {
     interval_hit_count_ = 0;
     interval_hit_top_ = 0;
   }
+  bool IsFull() { return real_map_.size() >= size_; }
   double GetCurHalf() const { return cur_half_; }
   int h1{}, h2{};  // debug
  private:
@@ -511,7 +518,7 @@ class HillSubReplacer {
   int32_t max_points_bits_;      // 最高得分为 (1 << max_points_bits_) - 1
   int32_t max_points_;           // 最高得分
   int32_t min_level_non_empty_;  // 当前最小的得分
-  double ghost_size_ratio_;      // 虚缓存大小比例
+  // double ghost_size_ratio_;      // 虚缓存大小比例
   uint64_t ghost_size_;
   int32_t interval_hit_count_ = 0;       // 统计区间命中次数
   int32_t interval_miss_count_ = 0;      // 统计区间为命中次数
@@ -553,6 +560,7 @@ class HillReplacer : public Replacer {
   }
 
   RC access(const std::string& key, HillHandle* h) {
+    // std::cout << "Access: " << Slice(key).ToString(true) << '\n';
     ts++;
     if (replacer_r_.Access(key, h)) {
       increase_hit_count();
@@ -570,7 +578,7 @@ class HillReplacer : public Replacer {
       hit_recorder.pop_front();
     }
 
-    replacer_s_.Access(key, h);
+    replacer_s_.Access(key, nullptr);
     if (ts % update_interval_ == 0) {
       int32_t r_mc, r_hc;
       int32_t s_mc, s_hc;
@@ -620,12 +628,27 @@ class HillReplacer : public Replacer {
     return RC::SUCCESS;
   }
 
-  HillHandle* get(const std::string& key) {
-    auto h = replacer_r_.Get(key);
-    if (h != nullptr) {
-      return h;
+  RC EnsureBothReplacerFree(autovector<HillHandle*>* deleted) {
+    if (replacer_r_.IsFull()) {
+      HillHandle* evicted_handle;
+      replacer_r_.Evict(&evicted_handle);
+      assert(!replacer_r_.IsFull());
+      deleted->push_back(evicted_handle);
     }
-    return replacer_s_.Get(key);
+    if (replacer_s_.IsFull()) {
+      replacer_s_.Evict();
+      assert(replacer_s_.IsFull());
+    }
+    return RC::SUCCESS;
+  }
+
+  HillHandle* get(const std::string& key) {
+    return replacer_r_.Get(key);
+    // auto h = replacer_r_.Get(key);
+    // if (h != nullptr) {
+    //   return h;
+    // }
+    // return replacer_s_.Get(key);
   }
 
   std::string get_name() { return {"Hill-Cache"}; }
@@ -644,6 +667,10 @@ class HillReplacer : public Replacer {
   int32_t recorder_hit_count{};
 };
 
+// class ALIGN_AS(CACHE_LINE_SIZE) HillCacheShard final : public CacheShardBase
+// {
+// };
+
 class HillCache
 #ifdef NDEBUG
     final
@@ -652,6 +679,8 @@ class HillCache
  public:  // functions
   virtual const char* Name() const override { return "HillCache"; }
 
+  // 需要区分这里的buffer_size表示对象数量，默认的capacity表示占用空间数量
+  // 默认块大小为 4 KB
   HillCache(uint64_t buffer_size, int32_t _stats_interval = 1000,
             double init_half = 16.0f, double hit_point = 1.0f,
             int32_t max_points_bits = 6, double ghost_size_ratio = 4.0f,
@@ -679,20 +708,39 @@ class HillCache
     auto&& k = key.ToString();
     // NOTE: 暂时用不到，这里把hash都设置为0
     HillHandle* e = CreateHandle(k, 0, obj, helper, charge);
-
-    usage_ += e->total_charge;
     e->SetPriority(priority);
     e->SetInCache(true);
-    auto r = hill_replacer_.access(k, e);
-    if (r == RC::SUCCESS) {
-      e->Ref();
-      if (handle != nullptr) {
-        e->Ref();
-        *handle = reinterpret_cast<Handle*>(e);
+    return InsertItem(e, reinterpret_cast<HillHandle**>(handle));
+  }
+
+  Status InsertItem(HillHandle* e, HillHandle** handle) {
+    Status s = Status::OK();
+    autovector<HillHandle*> last_reference_list;
+    {
+      DMutexLock l(mutex_);
+
+      hill_replacer_.EnsureBothReplacerFree(&last_reference_list);
+
+      usage_ += e->total_charge;
+
+      if (handle == nullptr) {
+        auto r = hill_replacer_.access(e->key().ToString(), e);
+        if (r != RC::SUCCESS) {
+          return Status::Corruption("Error");
+        }
+      } else {
+        if (!e->HasRefs()) {
+          e->Ref();
+        }
+        *handle = e;
       }
-      return Status::OK();
     }
-    return Status::Corruption("Error");
+    for (HillHandle* entry : last_reference_list) {
+      entry->SetInCache(false);
+      usage_ -= entry->total_charge;
+      free(entry);
+    }
+    return s;
   }
 
   virtual Handle* Lookup(const Slice& key,
