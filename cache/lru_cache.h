@@ -279,6 +279,7 @@ class ALIGN_AS(CACHE_LINE_SIZE) LRUCacheShard final : public CacheShardBase {
   using HashCref = uint32_t;
   uint64_t hit_c = 0;
   uint64_t total_c = 0;
+
  public:  // Function definitions expected as parameter to ShardedCache
   static inline HashVal ComputeHash(const Slice& key, uint32_t seed) {
     return Lower32of64(GetSliceNPHash64(key, seed));
@@ -349,7 +350,10 @@ class ALIGN_AS(CACHE_LINE_SIZE) LRUCacheShard final : public CacheShardBase {
   double GetLowPriPoolRatio();
 
   void AppendPrintableOptions(std::string& /*str*/) const;
-
+  
+  double GetHitRate() {
+    return (double)hit_c / total_c;
+  }
  private:
   friend class LRUCache;
   // Insert an item into the hash table and, if handle is null, insert into

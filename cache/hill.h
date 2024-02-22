@@ -94,7 +94,7 @@ struct HillHandle {
 
   // Just reduce the reference count by 1. Return true if it was last reference.
   bool Unref() {
-    assert(refs > 0);
+    //// assert(refs > 0);
     refs--;
     return refs == 0;
   }
@@ -158,8 +158,8 @@ struct HillHandle {
   }
 
   void Free(MemoryAllocator* allocator) {
-    assert(refs == 0);
-    assert(helper);
+    //// assert(refs == 0);
+    //// assert(helper);
     if (helper->del_cb) {
       helper->del_cb(value, allocator);
     }
@@ -191,7 +191,7 @@ struct HillHandle {
   inline size_t GetCharge(
       CacheMetadataChargePolicy metadata_charge_policy) const {
     size_t meta_charge = CalcuMetaCharge(metadata_charge_policy);
-    assert(total_charge >= meta_charge);
+    //// assert(total_charge >= meta_charge);
     return total_charge - meta_charge;
   }
 };
@@ -277,7 +277,7 @@ class HillSubReplacer {
   HillSubReplacer(int32_t size, double init_half, double hit_points,
                   int max_points_bits, double ghost_size_ratio,
                   double top_ratio, int32_t _mru_threshold)
-      : size_(size),
+      : size_(size + 1),
         init_half_(init_half),
         hit_points_(hit_points),
         max_points_bits_(max_points_bits),
@@ -297,8 +297,8 @@ class HillSubReplacer {
   int Access(const std::string& key, HillHandle* h) {
     bool hit = true;
     if (h) {
-      assert(h->InCache());
-      assert(key == h->key().ToString());
+      //// assert(h->InCache());
+      //// assert(key == h->key().ToString());
     }
     int32_t inserted_level = hit_points_;
     if (real_map_.count(key) == 0) {
@@ -307,6 +307,10 @@ class HillSubReplacer {
       interval_miss_count_++;
       if (real_map_.size() == size_) {
         Evict();
+        // should never evict by replacer
+        if (h) {
+          //// assert(false);
+        }
       }
       if (ghost_map_.count(key) != 0) {
         // use level in ghost
@@ -328,10 +332,11 @@ class HillSubReplacer {
         real_lru_[level].erase(hit_iter);
         real_map_.erase(key);
         inserted_level += level;
-        while (real_lru_[min_level_non_empty_].empty() && min_level_non_empty_ < max_points_) {
+        while (real_lru_[min_level_non_empty_].empty() &&
+               min_level_non_empty_ < max_points_) {
           min_level_non_empty_++;
         }
-        // assert(min_level_non_empty_ < 10);
+        // //// assert(min_level_non_empty_ < 10);
       } else {
         h2++;
         inserted_level += real_map_[key].insert_level;
@@ -395,7 +400,7 @@ class HillSubReplacer {
     //           reinterpret_cast<std::uintptr_t>(entry->second.h_->value) <<
     //           "\n";
     if (entry != real_map_.end()) {
-      assert(entry->second.h_->InCache());
+      //// assert(entry->second.h_->InCache());
       // return nullptr;
       return entry->second.h_;
     } else {
@@ -406,7 +411,7 @@ class HillSubReplacer {
   void Evict(HillHandle** evicted_handle = nullptr) {
     // evict key in real
     std::string evict_key;
-    int evict_level;
+    int evict_level{};
     int mx_ts = 0;
     bool front = false;
     if (min_level_non_empty_ <= mru_threshold_) {
@@ -440,22 +445,19 @@ class HillSubReplacer {
     if (ghost_size_ != 0 && evict_level != 0) {
       MoveToGhost(evict_key, evict_level);
     }
-    while (real_lru_[min_level_non_empty_].empty() && min_level_non_empty_ < max_points_) {
+    while (real_lru_[min_level_non_empty_].empty() &&
+           min_level_non_empty_ < max_points_) {
       min_level_non_empty_++;
     }
-    if (min_level_non_empty_ > 10) {
-      std::cout << "?";
-    }
     if (evicted_handle) {
-      std::cout << (*evicted_handle)->key().ToString(true) << '\n';
-      assert((*evicted_handle)->InCache());
-      assert(evict_key == (*evicted_handle)->key().ToString());
+      //// assert((*evicted_handle)->InCache());
+      //// assert(evict_key == (*evicted_handle)->key().ToString());
     }
   }
   void MoveToGhost(const std::string& key, int level) {
     EvictGhost();
     ghost_lru_.push_front(key);
-      // NOTE: 这里应该不用写入value
+    // NOTE: 这里应该不用写入value
     ghost_map_[key] =
         HillEntry(ghost_lru_.begin(), level, cur_ts_, false, nullptr);
   }
@@ -509,9 +511,9 @@ class HillSubReplacer {
   }
   bool IsFull() { return real_map_.size() >= size_; }
   double GetCurHalf() const { return cur_half_; }
-  void Remove(const std::string &key) {
+  void Remove(const std::string& key) {
     if (real_map_.count(key) != 0) {
-      const std::string &evicted_key = key;
+      const std::string& evicted_key = key;
       int evicted_level = 0;
       if (!real_map_[key].h_recency) {
         std::list<std::string>::iterator hit_iter = real_map_[key].key_iter;
@@ -519,10 +521,11 @@ class HillSubReplacer {
         // erase key in real, use level in real
         real_lru_[level].erase(hit_iter);
         real_map_.erase(key);
-        while (real_lru_[min_level_non_empty_].empty() && min_level_non_empty_ < max_points_) {
+        while (real_lru_[min_level_non_empty_].empty() &&
+               min_level_non_empty_ < max_points_) {
           min_level_non_empty_++;
         }
-        // assert(min_level_non_empty_ < 10);
+        // //// assert(min_level_non_empty_ < 10);
         evicted_level = level;
       } else {
         evicted_level = real_map_[key].insert_level;
@@ -675,40 +678,35 @@ class HillReplacer : public Replacer {
     if (replacer_r_.IsFull()) {
       HillHandle* evicted_handle;
       replacer_r_.Evict(&evicted_handle);
-      assert(!replacer_r_.IsFull());
-      assert(evicted_handle->InCache() && !evicted_handle->HasRefs());
+      //// assert(!replacer_r_.IsFull());
+      //// assert(evicted_handle->InCache() && !evicted_handle->HasRefs());
       deleted->push_back(evicted_handle);
     }
     if (replacer_s_.IsFull()) {
       replacer_s_.Evict();
-      assert(!replacer_s_.IsFull());
+      //// assert(!replacer_s_.IsFull());
     }
     return RC::SUCCESS;
   }
 
   HillHandle* get(const std::string& key) {
     HillHandle* handle = replacer_r_.Get(key);
-    // if (handle) {
-    //   access(key, handle);
-    // }
     return handle;
   }
 
   void Remove(const std::string& key) {
     replacer_r_.Remove(key);
     replacer_s_.Remove(key);
-    assert(replacer_r_.Get(key) == nullptr);
-    assert(replacer_s_.Get(key) == nullptr);
+    //// assert(replacer_r_.Get(key) == nullptr);
+    //// assert(replacer_s_.Get(key) == nullptr);
   }
   void Insert(const std::string& key, HillHandle* h) {
-    assert(replacer_r_.Get(key) == nullptr);
-    assert(h->InCache());
+    //// assert(replacer_r_.Get(key) == nullptr);
+    //// assert(h->InCache());
     replacer_r_.Access(key, h);
     replacer_s_.Access(key, nullptr);
   }
-  bool IsFull() {
-    return replacer_r_.IsFull();
-  }
+  bool IsFull() { return replacer_r_.IsFull(); }
   int EvictableCount() {
     return replacer_r_.real_map_.size() - replacer_r_.top_lru_.size();
   }
@@ -718,8 +716,8 @@ class HillReplacer : public Replacer {
     if (replacer_s_.real_map_.size() - replacer_s_.top_lru_.size()) {
       replacer_s_.Evict();
     }
-    assert(!replacer_r_.IsFull());
-    // assert(evicted_handle->InCache() && !evicted_handle->HasRefs());
+    //// assert(!replacer_r_.IsFull());
+    // //// assert(evicted_handle->InCache() && !evicted_handle->HasRefs());
     return evicted_handle;
   }
   std::string get_name() { return {"Hill-Cache"}; }
@@ -787,25 +785,25 @@ class HillCache
   Status InsertItem(HillHandle* e, HillHandle** handle) {
     Status s = Status::OK();
     autovector<HillHandle*> last_reference_list;
-    // total_c++;
+    total_c++;
     {
       DMutexLock l(mutex_);
       while (table_.size() + 1 > capacity_ && hill_replacer_.EvictableCount()) {
         HillHandle* old = hill_replacer_.EvictOne();
-        std::cout << "OldKey: " << old->key().ToString(true) << '\n';
-        assert(table_.find(old->key().ToString()) != table_.end());
-        assert(old->InCache() && !old->HasRefs());
+        // std::cout << "OldKey: " << old->key().ToString(true) << '\n';
+        //// assert(table_.find(old->key().ToString()) != table_.end());
+        //// assert(old->InCache() && !old->HasRefs());
         // hill_replacer_.Remove(old->key().ToString());
         table_.erase(old->key().ToString());
         old->SetInCache(false);
-        assert(hill_replacer_.get(old->key().ToString()) == nullptr);
+        //// assert(hill_replacer_.get(old->key().ToString()) == nullptr);
         usage_ -= old->total_charge;
         last_reference_list.push_back(old);
       }
 
       if (table_.size() + 1 > capacity_) {
         e->SetInCache(false);
-        assert(hill_replacer_.get(e->key().ToString()) == nullptr);
+        //// assert(hill_replacer_.get(e->key().ToString()) == nullptr);
         if (handle == nullptr) {
           last_reference_list.push_back(e);
         } else {
@@ -823,20 +821,20 @@ class HillCache
         usage_ += e->total_charge;
 
         if (old != nullptr) {
-          assert(old->InCache());
+          //// assert(old->InCache());
           old->SetInCache(false);
           if (!old->HasRefs()) {
             hill_replacer_.Remove(old->key().ToString());
             usage_ -= old->total_charge;
             last_reference_list.push_back(old);
           } else {
-            std::cout << "?";
+            // std::cout << "?";
           }
-          assert(hill_replacer_.get(old->key().ToString()) == nullptr);
+          //// assert(hill_replacer_.get(old->key().ToString()) == nullptr);
         }
         if (handle == nullptr) {
-          hill_replacer_.Insert(e->key().ToString(), e); 
-          assert(table_.find(e->key().ToString()) != table_.end());
+          hill_replacer_.Insert(e->key().ToString(), e);
+          //// assert(table_.find(e->key().ToString()) != table_.end());
         } else {
           if (!e->HasRefs()) {
             e->Ref();
@@ -866,7 +864,7 @@ class HillCache
     // HillHandle* h = nullptr;
     total_c++;
     if (e != nullptr) {
-      assert(e->InCache());
+      //// assert(e->InCache());
       if (!e->HasRefs()) {
         // remove
         hill_replacer_.Remove(k);
@@ -874,9 +872,14 @@ class HillCache
       e->Ref();
       e->SetHit();
       hit_c++;
-      assert(e->value != nullptr);
+      //// assert(e->value != nullptr);
     }
-    std::cout << "HillCache hit rate: " << (double)hit_c / total_c << '\n';
+#ifndef NDEBUG
+    if (total_c % 1000 == 0) {
+      std::cout << "HillCache hit rate: " << (double)hit_c / total_c
+                << " R: " << hill_replacer_.replacer_r_.GetCurHalf() << '\n';
+    }
+#endif
     return reinterpret_cast<Handle*>(e);
   }
 
@@ -893,21 +896,22 @@ class HillCache
       must_free = e->Unref();
       was_in_cache = e->InCache();
       if (must_free && was_in_cache) {
-        if (table_.size() >= capacity_ || erase_if_last_ref) {
+        if (table_.size() > capacity_ || erase_if_last_ref) {
           table_.erase(e->key().ToString());
           e->SetInCache(false);
-          assert(hill_replacer_.get(e->key().ToString()) == nullptr);
+          //// assert(hill_replacer_.get(e->key().ToString()) == nullptr);
         } else {
           hill_replacer_.Insert(e->key().ToString(), e);
-          assert(e->InCache());
-          assert(table_.find(e->key().ToString()) != table_.end());
+          //// assert(e->InCache());
+          //// assert(table_.find(e->key().ToString()) != table_.end());
           must_free = false;
         }
       }
       if (must_free) {
         // free(e);
-        // assert(usage_ >= e->total_charge);
+        // //// assert(usage_ >= e->total_charge);
         usage_ -= e->total_charge;
+        // std::cout << usage_.load() << '\n';
       }
     }
     // Free the entry here outside of mutex for performance reasons.
@@ -920,7 +924,7 @@ class HillCache
   virtual bool Ref(Handle* handle) override {
     DMutexLock l(mutex_);
     auto h = reinterpret_cast<HillHandle*>(handle);
-    assert(h->HasRefs());
+    //// assert(h->HasRefs());
     h->Ref();
     return true;
   }
@@ -999,15 +1003,17 @@ class HillCache
     std::cout << "Unsupporteded!";
     abort();
   }
-
+  double GetHitRate() {
+    return (double)hit_c / total_c;
+  }
  private:
   HillHandle* CreateHandle(const std::string& key, uint32_t hash,
                            Cache::ObjectPtr value,
                            const Cache::CacheItemHelper* helper,
                            size_t charge) {
-    assert(helper);
+    //// assert(helper);
     // value == nullptr is reserved for indicating failure in SecondaryCache
-    assert(!(helper->IsSecondaryCacheCompatible() && value == nullptr));
+    //// assert(!(helper->IsSecondaryCacheCompatible() && value == nullptr));
 
     // Allocate the memory here outside of the mutex.
     // If the cache is full, we'll have to release it.

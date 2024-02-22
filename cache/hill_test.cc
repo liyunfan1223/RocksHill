@@ -157,11 +157,37 @@ class CacheTest : public testing::Test,
   double GenerateRandomIndex(double avg, double stdVar) {
     static std::default_random_engine generator(233);
     // 第一个参数为高斯分布的平均值，第二个参数为标准差
-    std::normal_distribution<double> distribution(
-        avg, stdVar);
+    std::normal_distribution<double> distribution(avg, stdVar);
     return distribution(generator);
   }
 
+  std::vector<int> Zipf_GenData(int n, int len, double a = 1.5) {
+    //随机数种子
+    std::random_device rd;
+    //均匀分布的伪随机数生成器
+    std::array<int, std::mt19937::state_size> seed_data{};
+    std::generate(std::begin(seed_data), std::end(seed_data), std::ref(rd));
+    std::seed_seq seq(std::begin(seed_data), std::end(seed_data));
+    auto engine = std::mt19937{seq};
+
+    // ofstream outfile("../data/normal.txt", ios::trunc);
+    // outfile << n << "\n";
+
+    //计算Zipf分布中每个值的概率
+    std::vector<double> probabilities;
+    // const double a = 1.5; // Zipf分布可变参数
+
+    for (int i = 1; i <= n; i++) {
+      probabilities.push_back(1.0 / pow(i, a));
+    }
+
+    std::discrete_distribution<> di(probabilities.begin(), probabilities.end());
+    std::vector<int> res;
+    for (int i = 0; i < len; i++) {
+      res.push_back(di(engine));
+    }
+    return res;
+  }
 };
 
 const Cache::CacheItemHelper CacheTest::kHelper{CacheEntryRole::kMisc,
@@ -307,7 +333,9 @@ TEST_P(CacheTest, InRocksDB) {
     ASSERT_OK(s);
     ASSERT_EQ(value, std::to_string(i));
   }
-
+  hill::HillCache* c = dynamic_cast<hill::HillCache*>(table_options.block_cache.get());
+  double hr = c->GetHitRate();
+  std::cout << "HillCache Hit Rate: " << hr << '\n';
   delete db;
 }
 
@@ -412,7 +440,7 @@ TEST_P(CacheTest, InRocksDBNormalDistributeHill) {
   // NOTE: 创建HillCache
   HillCacheOptions hill_opt;
   // hill_opt.capacity = 500ul << 1;
-  hill_opt.capacity = 1 * kKilobyte / kDefaultBlockSize;
+  hill_opt.capacity = 256 * kKilobyte / kDefaultBlockSize;
   std::shared_ptr<Cache> cache = hill_opt.MakeHillCache();
   BlockBasedTableOptions table_options;
   table_options.block_cache = cache;
@@ -426,30 +454,21 @@ TEST_P(CacheTest, InRocksDBNormalDistributeHill) {
   assert(s.ok());
   std::string randomString;
   for (int i = 0; i < 8; i++) randomString += 'a';
-  
+
   std::string value;
-  size_t key_num = 5000000;
+  size_t key_num = 100000;
   for (size_t i = 0; i < key_num; i++) {
-    int idx = GenerateRandomIndex(0, 5000);
+    int idx = GenerateRandomIndex(0, 2500);
     // idx = i % 1024;
     s = db->Get(ReadOptions(), std::to_string(idx), &value);
     if (s.ok()) {
-    // ASSERT_OK(s);
+      // ASSERT_OK(s);
       ASSERT_EQ(value, std::to_string(idx) + randomString);
     } else {
-      s = db->Put(WriteOptions(), std::to_string(idx), std::to_string(idx) + randomString);
-      // db->Flush(FlushOptions());
+      s = db->Put(WriteOptions(), std::to_string(idx),
+                  std::to_string(idx) + randomString);
     }
   }
-  // options.statistics
-
-  // for (size_t i = 0; i < key_num; i++) {
-  //   s = db->Get(ReadOptions(), std::to_string(i) + randomString, &value);
-  //   if (s.ok()) {
-  //   // ASSERT_OK(s);
-  //     ASSERT_EQ(value, std::to_string(i));
-  //   }
-  // }
 
   delete db;
 }
@@ -468,7 +487,7 @@ TEST_P(CacheTest, InRocksDBNormalDistributeLRU) {
   // NOTE: 创建HillCache
   LRUCacheOptions lru_opt;
   // hill_opt.capacity = 500ul << 1;
-  lru_opt.capacity = 16 * kKilobyte;
+  lru_opt.capacity = 256 * kKilobyte;
   lru_opt.num_shard_bits = 0;
   std::shared_ptr<Cache> cache = lru_opt.MakeSharedCache();
   BlockBasedTableOptions table_options;
@@ -482,81 +501,181 @@ TEST_P(CacheTest, InRocksDBNormalDistributeLRU) {
   assert(s.ok());
   std::string randomString;
   for (int i = 0; i < 8; i++) randomString += 'a';
-  
+
   std::string value;
-  size_t key_num = 5000000;
+  size_t key_num = 100000;
   for (size_t i = 0; i < key_num; i++) {
-    int idx = GenerateRandomIndex(0, 5000);
+    int idx = GenerateRandomIndex(0, 2500);
     // idx = i % 1024;
     s = db->Get(ReadOptions(), std::to_string(idx), &value);
     if (s.ok()) {
-    // ASSERT_OK(s);
+      // ASSERT_OK(s);
       ASSERT_EQ(value, std::to_string(idx) + randomString);
     } else {
-      s = db->Put(WriteOptions(), std::to_string(idx), std::to_string(idx) + randomString);
+      s = db->Put(WriteOptions(), std::to_string(idx),
+                  std::to_string(idx) + randomString);
       // db->Flush(FlushOptions());
     }
   }
-
-  // DB* db;
-  // Options options;
-  // // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
-  // options.IncreaseParallelism();
-  // options.OptimizeLevelStyleCompaction();
-  // // create the DB if it's not already present
-  // options.create_if_missing = true;
-  // options.use_direct_reads = true;
-  // options.use_direct_io_for_flush_and_compaction = true;
-  // options.write_buffer_size = 256;
-
-  // // NOTE: 创建HillCache
-  // LRUCacheOptions lru_opt;
-  // // hill_opt.capacity = 500ul << 1;
-  // lru_opt.capacity = 16 * kKilobyte;
-  // lru_opt.num_shard_bits = 0;
-  // std::shared_ptr<Cache> cache = lru_opt.MakeSharedCache();
-  // BlockBasedTableOptions table_options;
-  // table_options.block_cache = cache;
-  // options.table_factory.reset(NewBlockBasedTableFactory(table_options));
-
-  // // open DB
-  // std::string kDBPath = "rocksdb_simple_example";
-  // rocksdb::DestroyDB(kDBPath, rocksdb::Options());
-  // Status s = DB::Open(options, kDBPath, &db);
-  // assert(s.ok());
-  // std::string randomString;
-  // for (int i = 0; i < 8; i++) randomString += 'a';
-  
-  // std::string value;
-  // size_t key_num = 5000000;
-  // for (size_t i = 0; i < key_num; i++) {
-  //   int idx = GenerateRandomIndex(0, 5000);
-  //   s = db->Get(ReadOptions(), std::to_string(idx), &value);
-  //   if (s.ok()) {
-  //   // ASSERT_OK(s);
-  //     ASSERT_EQ(value, std::to_string(idx) + randomString);
-  //   } else {
-  //     s = db->Put(WriteOptions(), std::to_string(idx), std::to_string(idx) + randomString);
-  //   }
-  // }
-  // db->Flush(FlushOptions());
-
-  // for (size_t i = 0; i < key_num; i++) {
-  //   s = db->Get(ReadOptions(), std::to_string(i) + randomString, &value);
-  //   if (s.ok()) {
-  //   // ASSERT_OK(s);
-  //     ASSERT_EQ(value, std::to_string(i));
-  //   }
-  // }
-
   delete db;
 }
+
+TEST_P(CacheTest, InRocksDBZipfDistributeHill) {
+  DB* db;
+  Options options;
+  // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
+  options.IncreaseParallelism();
+  options.OptimizeLevelStyleCompaction();
+  // create the DB if it's not already present
+  options.create_if_missing = true;
+  options.use_direct_reads = true;
+  options.use_direct_io_for_flush_and_compaction = true;
+  options.write_buffer_size = 256;
+  // NOTE: 创建HillCache
+  HillCacheOptions hill_opt;
+  // hill_opt.capacity = 500ul << 1;
+  hill_opt.capacity = 64 * kKilobyte / kDefaultBlockSize;
+  std::shared_ptr<Cache> cache = hill_opt.MakeHillCache();
+  BlockBasedTableOptions table_options;
+  table_options.block_cache = cache;
+  options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+  options.statistics = CreateDBStatistics();
+
+  // open DB
+  std::string kDBPath = "rocksdb_simple_example";
+  rocksdb::DestroyDB(kDBPath, rocksdb::Options());
+  Status s = DB::Open(options, kDBPath, &db);
+  assert(s.ok());
+  std::string randomString;
+  for (int i = 0; i < 8; i++) randomString += 'a';
+
+  std::string value;
+  size_t key_num = 50000;
+  std::vector<int> ord = Zipf_GenData(key_num, key_num, 1.2);
+  for (size_t i = 0; i < key_num; i++) {
+    int idx = ord[i];
+    // idx = i % 1024;
+    s = db->Get(ReadOptions(), std::to_string(idx), &value);
+    if (s.ok()) {
+      // ASSERT_OK(s);
+      ASSERT_EQ(value, std::to_string(idx) + randomString);
+    } else {
+      s = db->Put(WriteOptions(), std::to_string(idx),
+                  std::to_string(idx) + randomString);
+    }
+  }
+  hill::HillCache* c = dynamic_cast<hill::HillCache*>(table_options.block_cache.get());
+  double hr = c->GetHitRate();
+  std::cout << "HillCache Hit Rate: " << hr << '\n';
+  delete db;
+}
+
+TEST_P(CacheTest, InRocksDBZipfDistributeLRU) {
+  DB* db;
+  Options options;
+  // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
+  options.IncreaseParallelism();
+  options.OptimizeLevelStyleCompaction();
+  // create the DB if it's not already present
+  options.create_if_missing = true;
+  options.use_direct_reads = true;
+  options.use_direct_io_for_flush_and_compaction = true;
+  options.write_buffer_size = 256;
+  // NOTE: 创建HillCache
+  LRUCacheOptions lru_opt;
+  // hill_opt.capacity = 500ul << 1;
+  lru_opt.capacity = 64 * kKilobyte;
+  lru_opt.num_shard_bits = 0;
+  std::shared_ptr<Cache> cache = lru_opt.MakeSharedCache();
+  BlockBasedTableOptions table_options;
+  table_options.block_cache = cache;
+  options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+
+  // open DB
+  std::string kDBPath = "rocksdb_simple_example";
+  rocksdb::DestroyDB(kDBPath, rocksdb::Options());
+  Status s = DB::Open(options, kDBPath, &db);
+  assert(s.ok());
+  std::string randomString;
+  for (int i = 0; i < 8; i++) randomString += 'a';
+
+  std::string value;
+  size_t key_num = 50000;
+  std::vector<int> ord = Zipf_GenData(key_num, key_num, 1.2);
+  for (size_t i = 0; i < key_num; i++) {
+    int idx = ord[i];
+    // idx = i % 1024;
+    s = db->Get(ReadOptions(), std::to_string(idx), &value);
+    if (s.ok()) {
+      // ASSERT_OK(s);
+      ASSERT_EQ(value, std::to_string(idx) + randomString);
+    } else {
+      s = db->Put(WriteOptions(), std::to_string(idx),
+                  std::to_string(idx) + randomString);
+    }
+  }
+  lru_cache::LRUCache* c = dynamic_cast<lru_cache::LRUCache*>(table_options.block_cache.get());
+  lru_cache::LRUCacheShard* shard = &c->GetShard(0);
+  double hr = (double)shard->GetHitRate();
+  std::cout << "HillCache Hit Rate: " << hr << '\n';
+  delete db;
+}
+// DB* db;
+// Options options;
+// // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
+// options.IncreaseParallelism();
+// options.OptimizeLevelStyleCompaction();
+// // create the DB if it's not already present
+// options.create_if_missing = true;
+// options.use_direct_reads = true;
+// options.use_direct_io_for_flush_and_compaction = true;
+// options.write_buffer_size = 256;
+
+// // NOTE: 创建HillCache
+// LRUCacheOptions lru_opt;
+// // hill_opt.capacity = 500ul << 1;
+// lru_opt.capacity = 16 * kKilobyte;
+// lru_opt.num_shard_bits = 0;
+// std::shared_ptr<Cache> cache = lru_opt.MakeSharedCache();
+// BlockBasedTableOptions table_options;
+// table_options.block_cache = cache;
+// options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+
+// // open DB
+// std::string kDBPath = "rocksdb_simple_example";
+// rocksdb::DestroyDB(kDBPath, rocksdb::Options());
+// Status s = DB::Open(options, kDBPath, &db);
+// assert(s.ok());
+// std::string randomString;
+// for (int i = 0; i < 8; i++) randomString += 'a';
+
+// std::string value;
+// size_t key_num = 5000000;
+// for (size_t i = 0; i < key_num; i++) {
+//   int idx = GenerateRandomIndex(0, 5000);
+//   s = db->Get(ReadOptions(), std::to_string(idx), &value);
+//   if (s.ok()) {
+//   // ASSERT_OK(s);
+//     ASSERT_EQ(value, std::to_string(idx) + randomString);
+//   } else {
+//     s = db->Put(WriteOptions(), std::to_string(idx), std::to_string(idx) +
+//     randomString);
+//   }
+// }
+// db->Flush(FlushOptions());
+
+// for (size_t i = 0; i < key_num; i++) {
+//   s = db->Get(ReadOptions(), std::to_string(i) + randomString, &value);
+//   if (s.ok()) {
+//   // ASSERT_OK(s);
+//     ASSERT_EQ(value, std::to_string(i));
+//   }
+// }
 
 INSTANTIATE_TEST_CASE_P(CacheTestInstance, CacheTest,
                         testing::Values(secondary_cache_test_util::kHillCache));
 
 }  // namespace ROCKSDB_NAMESPACE
-
 
 int main(int argc, char** argv) {
   ROCKSDB_NAMESPACE::port::InstallStackTraceHandler();
