@@ -27,6 +27,7 @@
 #include "cache/sharded_cache.h"
 #include "port/malloc.h"
 #include "rocksdb/advanced_cache.h"
+#include "rocksdb/slice.h"
 #include "util/autovector.h"
 #include "util/distributed_mutex.h"
 namespace ROCKSDB_NAMESPACE {
@@ -295,6 +296,10 @@ class HillSubReplacer {
 
   int Access(const std::string& key, HillHandle* h) {
     bool hit = true;
+    if (h) {
+      assert(h->InCache());
+      assert(key == h->key().ToString());
+    }
     int32_t inserted_level = hit_points_;
     if (real_map_.count(key) == 0) {
       // miss
@@ -323,9 +328,10 @@ class HillSubReplacer {
         real_lru_[level].erase(hit_iter);
         real_map_.erase(key);
         inserted_level += level;
-        while (real_lru_[min_level_non_empty_].empty()) {
+        while (real_lru_[min_level_non_empty_].empty() && min_level_non_empty_ < max_points_) {
           min_level_non_empty_++;
         }
+        // assert(min_level_non_empty_ < 10);
       } else {
         h2++;
         inserted_level += real_map_[key].insert_level;
@@ -337,11 +343,12 @@ class HillSubReplacer {
 
     if (top_lru_.size() >= lru_size_) {
       std::string _key = top_lru_.back();
+      HillHandle* oldH = real_map_[_key].h_;
       int lvl = real_map_[_key].insert_level;
       real_lru_[lvl].push_front(_key);
       // NOTE: 这里应该是把key塞进去。
       real_map_[_key] =
-          HillEntry(real_lru_[lvl].begin(), lvl, cur_ts_, false, h);
+          HillEntry(real_lru_[lvl].begin(), lvl, cur_ts_, false, oldH);
       if (lvl < min_level_non_empty_) {
         min_level_non_empty_ = lvl;
       }
@@ -388,6 +395,8 @@ class HillSubReplacer {
     //           reinterpret_cast<std::uintptr_t>(entry->second.h_->value) <<
     //           "\n";
     if (entry != real_map_.end()) {
+      assert(entry->second.h_->InCache());
+      // return nullptr;
       return entry->second.h_;
     } else {
       return nullptr;
@@ -429,20 +438,32 @@ class HillSubReplacer {
     real_map_.erase(evict_key);
     // move to ghost
     if (ghost_size_ != 0 && evict_level != 0) {
-      // evict ghost
-      if (ghost_map_.size() >= ghost_size_) {
-        std::string _evict_key = ghost_lru_.back();
-        ghost_lru_.pop_back();
-        ghost_map_.erase(_evict_key);
-      }
-      // min_level_non_empty_ == evict_key's level
-      ghost_lru_.push_front(evict_key);
-      // NOTE: 这里应该不用写入value
-      ghost_map_[evict_key] =
-          HillEntry(ghost_lru_.begin(), evict_level, cur_ts_, false, nullptr);
+      MoveToGhost(evict_key, evict_level);
     }
-    while (real_lru_[min_level_non_empty_].empty()) {
+    while (real_lru_[min_level_non_empty_].empty() && min_level_non_empty_ < max_points_) {
       min_level_non_empty_++;
+    }
+    if (min_level_non_empty_ > 10) {
+      std::cout << "?";
+    }
+    if (evicted_handle) {
+      std::cout << (*evicted_handle)->key().ToString(true) << '\n';
+      assert((*evicted_handle)->InCache());
+      assert(evict_key == (*evicted_handle)->key().ToString());
+    }
+  }
+  void MoveToGhost(const std::string& key, int level) {
+    EvictGhost();
+    ghost_lru_.push_front(key);
+      // NOTE: 这里应该不用写入value
+    ghost_map_[key] =
+        HillEntry(ghost_lru_.begin(), level, cur_ts_, false, nullptr);
+  }
+  void EvictGhost() {
+    if (ghost_map_.size() >= ghost_size_) {
+      std::string _evict_key = ghost_lru_.back();
+      ghost_lru_.pop_back();
+      ghost_map_.erase(_evict_key);
     }
   }
 
@@ -482,13 +503,35 @@ class HillSubReplacer {
                       int32_t& hit_count /*, int32_t &hit_top*/) {
     miss_count = interval_miss_count_;
     hit_count = interval_hit_count_;
-    //        hit_top = interval_hit_top_;
     interval_miss_count_ = 0;
     interval_hit_count_ = 0;
     interval_hit_top_ = 0;
   }
   bool IsFull() { return real_map_.size() >= size_; }
   double GetCurHalf() const { return cur_half_; }
+  void Remove(const std::string &key) {
+    if (real_map_.count(key) != 0) {
+      const std::string &evicted_key = key;
+      int evicted_level = 0;
+      if (!real_map_[key].h_recency) {
+        std::list<std::string>::iterator hit_iter = real_map_[key].key_iter;
+        int level = GetCurrentLevel(real_map_[key]);  // real_map_[key].second;
+        // erase key in real, use level in real
+        real_lru_[level].erase(hit_iter);
+        real_map_.erase(key);
+        while (real_lru_[min_level_non_empty_].empty() && min_level_non_empty_ < max_points_) {
+          min_level_non_empty_++;
+        }
+        // assert(min_level_non_empty_ < 10);
+        evicted_level = level;
+      } else {
+        evicted_level = real_map_[key].insert_level;
+        top_lru_.erase(real_map_[key].key_iter);
+        real_map_.erase(key);
+      }
+      MoveToGhost(evicted_key, evicted_level);
+    }
+  }
   int h1{}, h2{};  // debug
  private:
   int32_t GetCurrentLevel(const HillEntry& status) {
@@ -534,6 +577,7 @@ class HillSubReplacer {
   double top_ratio_;
   int32_t mru_threshold_;
   friend class HillCache;
+  friend class HillReplacer;
 };
 
 class HillReplacer : public Replacer {
@@ -560,7 +604,6 @@ class HillReplacer : public Replacer {
   }
 
   RC access(const std::string& key, HillHandle* h) {
-    // std::cout << "Access: " << Slice(key).ToString(true) << '\n';
     ts++;
     if (replacer_r_.Access(key, h)) {
       increase_hit_count();
@@ -633,24 +676,52 @@ class HillReplacer : public Replacer {
       HillHandle* evicted_handle;
       replacer_r_.Evict(&evicted_handle);
       assert(!replacer_r_.IsFull());
+      assert(evicted_handle->InCache() && !evicted_handle->HasRefs());
       deleted->push_back(evicted_handle);
     }
     if (replacer_s_.IsFull()) {
       replacer_s_.Evict();
-      assert(replacer_s_.IsFull());
+      assert(!replacer_s_.IsFull());
     }
     return RC::SUCCESS;
   }
 
   HillHandle* get(const std::string& key) {
-    return replacer_r_.Get(key);
-    // auto h = replacer_r_.Get(key);
-    // if (h != nullptr) {
-    //   return h;
+    HillHandle* handle = replacer_r_.Get(key);
+    // if (handle) {
+    //   access(key, handle);
     // }
-    // return replacer_s_.Get(key);
+    return handle;
   }
 
+  void Remove(const std::string& key) {
+    replacer_r_.Remove(key);
+    replacer_s_.Remove(key);
+    assert(replacer_r_.Get(key) == nullptr);
+    assert(replacer_s_.Get(key) == nullptr);
+  }
+  void Insert(const std::string& key, HillHandle* h) {
+    assert(replacer_r_.Get(key) == nullptr);
+    assert(h->InCache());
+    replacer_r_.Access(key, h);
+    replacer_s_.Access(key, nullptr);
+  }
+  bool IsFull() {
+    return replacer_r_.IsFull();
+  }
+  int EvictableCount() {
+    return replacer_r_.real_map_.size() - replacer_r_.top_lru_.size();
+  }
+  HillHandle* EvictOne() {
+    HillHandle* evicted_handle;
+    replacer_r_.Evict(&evicted_handle);
+    if (replacer_s_.real_map_.size() - replacer_s_.top_lru_.size()) {
+      replacer_s_.Evict();
+    }
+    assert(!replacer_r_.IsFull());
+    // assert(evicted_handle->InCache() && !evicted_handle->HasRefs());
+    return evicted_handle;
+  }
   std::string get_name() { return {"Hill-Cache"}; }
 
  private:
@@ -716,28 +787,65 @@ class HillCache
   Status InsertItem(HillHandle* e, HillHandle** handle) {
     Status s = Status::OK();
     autovector<HillHandle*> last_reference_list;
+    // total_c++;
     {
       DMutexLock l(mutex_);
+      while (table_.size() + 1 > capacity_ && hill_replacer_.EvictableCount()) {
+        HillHandle* old = hill_replacer_.EvictOne();
+        std::cout << "OldKey: " << old->key().ToString(true) << '\n';
+        assert(table_.find(old->key().ToString()) != table_.end());
+        assert(old->InCache() && !old->HasRefs());
+        // hill_replacer_.Remove(old->key().ToString());
+        table_.erase(old->key().ToString());
+        old->SetInCache(false);
+        assert(hill_replacer_.get(old->key().ToString()) == nullptr);
+        usage_ -= old->total_charge;
+        last_reference_list.push_back(old);
+      }
 
-      hill_replacer_.EnsureBothReplacerFree(&last_reference_list);
-
-      usage_ += e->total_charge;
-
-      if (handle == nullptr) {
-        auto r = hill_replacer_.access(e->key().ToString(), e);
-        if (r != RC::SUCCESS) {
-          return Status::Corruption("Error");
+      if (table_.size() + 1 > capacity_) {
+        e->SetInCache(false);
+        assert(hill_replacer_.get(e->key().ToString()) == nullptr);
+        if (handle == nullptr) {
+          last_reference_list.push_back(e);
+        } else {
+          free(e);
+          e = nullptr;
+          *handle = nullptr;
+          s = Status::MemoryLimit("Insert failed due to full cache");
         }
       } else {
-        if (!e->HasRefs()) {
-          e->Ref();
+        HillHandle* old = nullptr;
+        if (table_.find(e->key().ToString()) != table_.end()) {
+          old = table_[e->key().ToString()];
         }
-        *handle = e;
+        table_[e->key().ToString()] = e;
+        usage_ += e->total_charge;
+
+        if (old != nullptr) {
+          assert(old->InCache());
+          old->SetInCache(false);
+          if (!old->HasRefs()) {
+            hill_replacer_.Remove(old->key().ToString());
+            usage_ -= old->total_charge;
+            last_reference_list.push_back(old);
+          } else {
+            std::cout << "?";
+          }
+          assert(hill_replacer_.get(old->key().ToString()) == nullptr);
+        }
+        if (handle == nullptr) {
+          hill_replacer_.Insert(e->key().ToString(), e); 
+          assert(table_.find(e->key().ToString()) != table_.end());
+        } else {
+          if (!e->HasRefs()) {
+            e->Ref();
+          }
+          *handle = e;
+        }
       }
     }
     for (HillHandle* entry : last_reference_list) {
-      entry->SetInCache(false);
-      usage_ -= entry->total_charge;
       free(entry);
     }
     return s;
@@ -748,10 +856,28 @@ class HillCache
                          CreateContext* create_context = nullptr,
                          Priority priority = Priority::LOW,
                          Statistics* stats = nullptr) override {
+    DMutexLock l(mutex_);
     auto&& k = key.ToString();
-    auto h = hill_replacer_.get(k);
-    if (h != nullptr) h->Ref();
-    return reinterpret_cast<Handle*>(h);
+    // auto e = hill_replacer_.get(k);
+    HillHandle* e = nullptr;
+    if (table_.find(key.ToString()) != table_.end()) {
+      e = table_[key.ToString()];
+    }
+    // HillHandle* h = nullptr;
+    total_c++;
+    if (e != nullptr) {
+      assert(e->InCache());
+      if (!e->HasRefs()) {
+        // remove
+        hill_replacer_.Remove(k);
+      }
+      e->Ref();
+      e->SetHit();
+      hit_c++;
+      assert(e->value != nullptr);
+    }
+    std::cout << "HillCache hit rate: " << (double)hit_c / total_c << '\n';
+    return reinterpret_cast<Handle*>(e);
   }
 
   using Cache::Release;
@@ -761,17 +887,32 @@ class HillCache
       return false;
     }
     bool must_free;
+    bool was_in_cache;
     {
       DMutexLock l(mutex_);
       must_free = e->Unref();
-      // was_in_cache = e->InCache();
+      was_in_cache = e->InCache();
+      if (must_free && was_in_cache) {
+        if (table_.size() >= capacity_ || erase_if_last_ref) {
+          table_.erase(e->key().ToString());
+          e->SetInCache(false);
+          assert(hill_replacer_.get(e->key().ToString()) == nullptr);
+        } else {
+          hill_replacer_.Insert(e->key().ToString(), e);
+          assert(e->InCache());
+          assert(table_.find(e->key().ToString()) != table_.end());
+          must_free = false;
+        }
+      }
+      if (must_free) {
+        // free(e);
+        // assert(usage_ >= e->total_charge);
+        usage_ -= e->total_charge;
+      }
     }
-
     // Free the entry here outside of mutex for performance reasons.
     if (must_free) {
       free(e);
-      // assert(usage_ >= e->total_charge);
-      usage_ -= e->total_charge;
     }
     return must_free;
   }
@@ -893,6 +1034,9 @@ class HillCache
   std::shared_ptr<MemoryAllocator> const allocator_;
   std::atomic<uint64_t> usage_;
   CacheMetadataChargePolicy metadata_charge_policy_;
+  uint64_t hit_c = 0;
+  uint64_t total_c = 0;
+  std::unordered_map<std::string, HillHandle*> table_;
 };
 
 }  // namespace hill

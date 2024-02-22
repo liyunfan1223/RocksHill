@@ -69,6 +69,9 @@ LRUHandle* LRUHandleTable::Remove(const Slice& key, uint32_t hash) {
   if (result != nullptr) {
     *ptr = result->next_hash;
     --elems_;
+    if (result->value == nullptr) {
+      std::cout << "?";
+    }
   }
   return result;
 }
@@ -373,7 +376,9 @@ void LRUCacheShard::SetStrictCapacityLimit(bool strict_capacity_limit) {
 Status LRUCacheShard::InsertItem(LRUHandle* e, LRUHandle** handle) {
   Status s = Status::OK();
   autovector<LRUHandle*> last_reference_list;
-
+  if (e->value == nullptr) {
+    std::cout << "?";
+  }
   {
     DMutexLock l(mutex_);
 
@@ -398,6 +403,9 @@ Status LRUCacheShard::InsertItem(LRUHandle* e, LRUHandle** handle) {
       // Insert into the cache. Note that the cache might get larger than its
       // capacity if not enough space was freed up.
       LRUHandle* old = table_.Insert(e);
+      if (old && old->value == nullptr) {
+        std::cout << "?";
+      }
       usage_ += e->total_charge;
       if (old != nullptr) {
         s = Status::OkOverwritten();
@@ -436,6 +444,7 @@ LRUHandle* LRUCacheShard::Lookup(const Slice& key, uint32_t hash,
   DMutexLock l(mutex_);
   // std::cout << "Lookup: " << Slice(key).ToString(true) << "\n";
   LRUHandle* e = table_.Lookup(key, hash);
+  total_c++;
   if (e != nullptr) {
     assert(e->InCache());
     if (!e->HasRefs()) {
@@ -445,7 +454,10 @@ LRUHandle* LRUCacheShard::Lookup(const Slice& key, uint32_t hash,
     }
     e->Ref();
     e->SetHit();
+    hit_c++;
+    assert(e->value != nullptr);
   }
+  std::cout << "LRUCache hit rate: " << (double)hit_c / total_c << '\n';
   return e;
 }
 
@@ -556,6 +568,7 @@ Status LRUCacheShard::Insert(const Slice& key, uint32_t hash,
   LRUHandle* e = CreateHandle(key, hash, value, helper, charge);
   e->SetPriority(priority);
   e->SetInCache(true);
+  // total_c++;
   return InsertItem(e, handle);
 }
 
