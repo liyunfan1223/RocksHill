@@ -333,7 +333,8 @@ TEST_P(CacheTest, InRocksDB) {
     ASSERT_OK(s);
     ASSERT_EQ(value, std::to_string(i));
   }
-  hill::HillCache* c = dynamic_cast<hill::HillCache*>(table_options.block_cache.get());
+  hill::HillCache* c =
+      dynamic_cast<hill::HillCache*>(table_options.block_cache.get());
   double hr = c->GetHitRate();
   std::cout << "HillCache Hit Rate: " << hr << '\n';
   delete db;
@@ -564,7 +565,8 @@ TEST_P(CacheTest, InRocksDBZipfDistributeHill) {
                   std::to_string(idx) + randomString);
     }
   }
-  hill::HillCache* c = dynamic_cast<hill::HillCache*>(table_options.block_cache.get());
+  hill::HillCache* c =
+      dynamic_cast<hill::HillCache*>(table_options.block_cache.get());
   double hr = c->GetHitRate();
   std::cout << "HillCache Hit Rate: " << hr << '\n';
   delete db;
@@ -614,12 +616,145 @@ TEST_P(CacheTest, InRocksDBZipfDistributeLRU) {
                   std::to_string(idx) + randomString);
     }
   }
-  lru_cache::LRUCache* c = dynamic_cast<lru_cache::LRUCache*>(table_options.block_cache.get());
+  lru_cache::LRUCache* c =
+      dynamic_cast<lru_cache::LRUCache*>(table_options.block_cache.get());
   lru_cache::LRUCacheShard* shard = &c->GetShard(0);
   double hr = (double)shard->GetHitRate();
   std::cout << "HillCache Hit Rate: " << hr << '\n';
   delete db;
 }
+
+TEST_P(CacheTest, InRocksDBZipfDistributeHillBIG1) {
+  DB* db;
+  Options options;
+  // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
+  options.IncreaseParallelism();
+  options.OptimizeLevelStyleCompaction();
+  // create the DB if it's not already present
+  options.create_if_missing = true;
+  options.use_direct_reads = true;
+  options.use_direct_io_for_flush_and_compaction = true;
+  options.write_buffer_size = 256;
+  // NOTE: 创建HillCache
+  HillCacheOptions hill_opt;
+  // hill_opt.capacity = 500ul << 1;
+  hill_opt.capacity = 1 * kMegabyte / kDefaultBlockSize;
+  std::shared_ptr<Cache> cache = hill_opt.MakeHillCache();
+  BlockBasedTableOptions table_options;
+  table_options.block_cache = cache;
+  options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+  options.statistics = CreateDBStatistics();
+
+  // open DB
+  std::string kDBPath = "rocksdb_simple_example";
+  rocksdb::DestroyDB(kDBPath, rocksdb::Options());
+  Status s = DB::Open(options, kDBPath, &db);
+  assert(s.ok());
+  std::string randomString;
+  for (int i = 0; i < 64; i++) randomString += 'a';
+
+  rocksdb::Statistics* stats = db->GetDBOptions().statistics.get();
+
+  std::string value;
+  size_t key_num = 100000;
+  std::vector<int> ord = Zipf_GenData(key_num, key_num, 0.99);
+  for (size_t i = 0; i < key_num; i++) {
+    int idx = ord[i];
+    // idx = i % 1024;
+    s = db->Get(ReadOptions(), std::to_string(idx), &value);
+    if (s.ok()) {
+      // ASSERT_OK(s);
+      ASSERT_EQ(value, std::to_string(idx) + randomString);
+    } else {
+      s = db->Put(WriteOptions(), std::to_string(idx),
+                  std::to_string(idx) + randomString);
+    }
+    // 获取 Block Cache 的命中和未命中次数
+    uint64_t block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
+    uint64_t block_cache_misses = stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
+    // 输出结果
+    // std::cout << "Block Cache Hits: " << block_cache_hits << std::endl;
+    // std::cout << "Block Cache Misses: " << block_cache_misses << std::endl;
+    if (i % 10000 == 0) {
+      std::cout << "Hill Block Cache Hit rate: " << ((block_cache_hits + block_cache_misses == 0) ? 0 : ((double)block_cache_hits / (block_cache_hits + block_cache_misses))) << "\n";
+    }
+  }
+  hill::HillCache* c =
+      dynamic_cast<hill::HillCache*>(table_options.block_cache.get());
+  double hr = c->GetHitRate();
+  std::cout << "HillCache Hit Rate: " << hr << '\n';
+  delete db;
+}
+
+TEST_P(CacheTest, InRocksDBZipfDistributeLRUBIG1) {
+  DB* db;
+  Options options;
+  // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
+  options.IncreaseParallelism();
+  options.OptimizeLevelStyleCompaction();
+  // create the DB if it's not already present
+  options.create_if_missing = true;
+  options.use_direct_reads = true;
+  options.use_direct_io_for_flush_and_compaction = true;
+  options.write_buffer_size = 256;
+  options.statistics = rocksdb::CreateDBStatistics();
+
+  // NOTE: 创建HillCache
+  LRUCacheOptions lru_opt;
+  // hill_opt.capacity = 500ul << 1;
+  lru_opt.capacity = 1 * kMegabyte;
+  lru_opt.num_shard_bits = 0;
+  std::shared_ptr<Cache> cache = lru_opt.MakeSharedCache();
+  BlockBasedTableOptions table_options;
+  table_options.block_cache = cache;
+  options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+
+  // open DB
+  std::string kDBPath = "rocksdb_simple_example";
+  rocksdb::DestroyDB(kDBPath, rocksdb::Options());
+  Status s = DB::Open(options, kDBPath, &db);
+  assert(s.ok());
+  std::string randomString;
+  for (int i = 0; i < 64; i++) randomString += 'a';
+
+  rocksdb::Statistics* stats = db->GetDBOptions().statistics.get();
+
+
+  
+  std::string value;
+  size_t key_num = 100000;
+  std::vector<int> ord = Zipf_GenData(key_num, key_num, 0.99);
+  for (size_t i = 0; i < key_num; i++) {
+    int idx = ord[i];
+    // std::cout << idx << '\n';
+    // idx = i % 1024;
+    s = db->Get(ReadOptions(), std::to_string(idx), &value);
+    if (s.ok()) {
+      // ASSERT_OK(s);
+      ASSERT_EQ(value, std::to_string(idx) + randomString);
+    } else {
+      s = db->Put(WriteOptions(), std::to_string(idx),
+                  std::to_string(idx) + randomString);
+    }
+
+    // 获取 Block Cache 的命中和未命中次数
+    uint64_t block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
+    uint64_t block_cache_misses = stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
+    // 输出结果
+    // std::cout << "Block Cache Hits: " << block_cache_hits << std::endl;
+    // std::cout << "Block Cache Misses: " << block_cache_misses << std::endl;
+    if (i % 10000 == 0) {
+      std::cout << "LRU Block Cache Hit rate: " << ((block_cache_hits + block_cache_misses == 0) ? 0 : ((double)block_cache_hits / (block_cache_hits + block_cache_misses))) << "\n";
+    }
+  }
+  lru_cache::LRUCache* c =
+      dynamic_cast<lru_cache::LRUCache*>(table_options.block_cache.get());
+  lru_cache::LRUCacheShard* shard = &c->GetShard(0);
+  double hr = (double)shard->GetHitRate();
+  std::cout << "LRUCache Hit Rate: " << hr << '\n';
+  delete db;
+}
+
 // DB* db;
 // Options options;
 // // Optimize RocksDB. This is the easiest way to get RocksDB to perform well

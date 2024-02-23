@@ -350,10 +350,9 @@ class ALIGN_AS(CACHE_LINE_SIZE) LRUCacheShard final : public CacheShardBase {
   double GetLowPriPoolRatio();
 
   void AppendPrintableOptions(std::string& /*str*/) const;
-  
-  double GetHitRate() {
-    return (double)hit_c / total_c;
-  }
+
+  double GetHitRate() { return (double)hit_c / total_c; }
+
  private:
   friend class LRUCache;
   // Insert an item into the hash table and, if handle is null, insert into

@@ -376,7 +376,7 @@ void LRUCacheShard::SetStrictCapacityLimit(bool strict_capacity_limit) {
 Status LRUCacheShard::InsertItem(LRUHandle* e, LRUHandle** handle) {
   Status s = Status::OK();
   autovector<LRUHandle*> last_reference_list;
-  total_c++;
+  // total_c++;
   {
     DMutexLock l(mutex_);
 
@@ -456,7 +456,7 @@ LRUHandle* LRUCacheShard::Lookup(const Slice& key, uint32_t hash,
     //// assert(e->value != nullptr);
   }
 #ifndef NDEBUG
-  if (total_c % 1000 == 0) {
+  if (total_c % 10000 == 0) {
     std::cout << "LRUCache hit rate: " << (double)hit_c / total_c << '\n';
   }
 #endif
