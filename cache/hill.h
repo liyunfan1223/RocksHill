@@ -554,9 +554,11 @@ class HillSubReplacer {
   }
   void Touch(const std::string &key) {
     if (ghost_map_.count(key) != 0) {
-      int cur_l = GetCurrentLevel(ghost_map_[key]);
-      ghost_map_[key].insert_level = cur_l;
-      ghost_map_[key].insert_ts = cur_ts_;
+      auto &entry = ghost_map_[key];
+      int cur_l = GetCurrentLevel(entry);
+      ghost_lru_.erase(entry.key_iter);
+      ghost_lru_.push_front(key);
+      ghost_map_[key] = HillEntry(ghost_lru_.begin(), cur_l, cur_ts_, false, nullptr);
     }
   }
   int h1{}, h2{};  // debug
@@ -850,16 +852,14 @@ class HillCache
         usage_ += e->total_charge;
 
         if (old != nullptr) {
+          s = Status::OkOverwritten();
           //// assert(old->InCache());
           old->SetInCache(false);
           if (!old->HasRefs()) {
             hill_replacer_.Remove(old->key().ToString());
             usage_ -= old->total_charge;
             last_reference_list.push_back(old);
-          } else {
-            // std::cout << "?";
           }
-          //// assert(hill_replacer_.get(old->key().ToString()) == nullptr);
         }
         if (handle == nullptr) {
           hill_replacer_.Insert(e->key().ToString(), e);
@@ -883,27 +883,25 @@ class HillCache
                          CreateContext* create_context = nullptr,
                          Priority priority = Priority::LOW,
                          Statistics* stats = nullptr) override {
-    DMutexLock l(mutex_);
     auto&& k = key.ToString();
     // auto e = hill_replacer_.get(k);
     HillHandle* e = nullptr;
-    if (table_.find(key.ToString()) != table_.end()) {
-      e = table_[key.ToString()];
-    }
-    // HillHandle* h = nullptr;
-    total_c++;
-    if (e != nullptr) {
-      //// assert(e->InCache());
-      if (!e->HasRefs()) {
-        // remove
-        hill_replacer_.Remove(k);
-      } else {
-        hill_replacer_.Touch(k);
+    {
+      DMutexLock l(mutex_);
+      if (table_.find(key.ToString()) != table_.end()) {
+        e = table_[key.ToString()];
       }
-      e->Ref();
-      e->SetHit();
-      hit_c++;
-      //// assert(e->value != nullptr);
+      // HillHandle* h = nullptr;
+      total_c++;
+      if (e != nullptr) {
+        //// assert(e->InCache());
+        if (!e->HasRefs()) {
+          hill_replacer_.Remove(k);
+        }
+        e->Ref();
+        e->SetHit();
+        hit_c++;
+      }
     }
 #ifndef NDEBUG
     if (total_c % 10000 == 0) {
@@ -943,6 +941,8 @@ class HillCache
         // //// assert(usage_ >= e->total_charge);
         usage_ -= e->total_charge;
         // std::cout << usage_.load() << '\n';
+      } else {
+        hill_replacer_.Touch(e->key().ToString());
       }
     }
     // Free the entry here outside of mutex for performance reasons.
