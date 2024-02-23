@@ -277,7 +277,7 @@ class HillSubReplacer {
   HillSubReplacer(int32_t size, double init_half, double hit_points,
                   int max_points_bits, double ghost_size_ratio,
                   double top_ratio, int32_t _mru_threshold)
-      : size_(size + 1),
+      : size_(size / 4096 + 1),
         init_half_(init_half),
         hit_points_(hit_points),
         max_points_bits_(max_points_bits),
@@ -290,7 +290,7 @@ class HillSubReplacer {
     min_level_non_empty_ = max_points_;
     real_lru_.resize(max_points_);
     UpdateHalf(init_half_);
-    lru_size_ = std::max(1, (int)(top_ratio_ * size));
+    lru_size_ = std::max(1, (int)(top_ratio_ * size_));
     ml_size_ = size_ - lru_size_;
   }
 
@@ -306,11 +306,11 @@ class HillSubReplacer {
       hit = false;
       interval_miss_count_++;
       if (real_map_.size() == size_) {
-        Evict();
+        // Evict();
         // should never evict by replacer
-        if (h) {
+        // if (h) {
           //// assert(false);
-        }
+        // }
       }
       if (ghost_map_.count(key) != 0) {
         // use level in ghost
@@ -819,7 +819,7 @@ class HillCache
     // total_c++;
     {
       DMutexLock l(mutex_);
-      while (table_.size() + 1 > capacity_ && hill_replacer_.EvictableCount()) {
+      while ((usage_ + e->total_charge) > capacity_ && hill_replacer_.EvictableCount()) {
         HillHandle* old = hill_replacer_.EvictOne();
         // std::cout << "OldKey: " << old->key().ToString(true) << '\n';
         //// assert(table_.find(old->key().ToString()) != table_.end());
@@ -832,7 +832,7 @@ class HillCache
         last_reference_list.push_back(old);
       }
 
-      if (table_.size() + 1 > capacity_) {
+      if (usage_ + e->total_charge > capacity_ && (strict_capacity_limit_ || handle == nullptr)) {
         e->SetInCache(false);
         //// assert(hill_replacer_.get(e->key().ToString()) == nullptr);
         if (handle == nullptr) {
@@ -925,7 +925,7 @@ class HillCache
       must_free = e->Unref();
       was_in_cache = e->InCache();
       if (must_free && was_in_cache) {
-        if (table_.size() > capacity_ || erase_if_last_ref) {
+        if (usage_ > capacity_ || erase_if_last_ref) {
           table_.erase(e->key().ToString());
           e->SetInCache(false);
           //// assert(hill_replacer_.get(e->key().ToString()) == nullptr);
@@ -1035,7 +1035,7 @@ class HillCache
     abort();
   }
   double GetHitRate() { return (double)hit_c / total_c; }
-
+  bool strict_capacity_limit_ = false;
  private:
   HillHandle* CreateHandle(const std::string& key, uint32_t hash,
                            Cache::ObjectPtr value,
