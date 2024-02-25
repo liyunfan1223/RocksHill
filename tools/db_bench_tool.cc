@@ -3174,7 +3174,7 @@ class Benchmark {
     } else if (FLAGS_cache_type == "hill_cache") {
       HillCacheOptions opts;
       // opts.top_ratio = 1.0f;
-      // opts.capacity = capacity / 4096;
+      opts.capacity = capacity;
       block_cache = opts.MakeHillCache();
     } else {
       fprintf(stderr, "Cache type not supported.");

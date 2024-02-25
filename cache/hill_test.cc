@@ -860,6 +860,7 @@ TEST_P(CacheTest, InRocksDBZipfDistributeHillBIG2) {
   std::shared_ptr<Cache> cache = hill_opt.MakeHillCache();
   BlockBasedTableOptions table_options;
   table_options.block_cache = cache;
+  // table_options.cache_index_and_filter_blocks = true;
   options.table_factory.reset(NewBlockBasedTableFactory(table_options));
   options.statistics = CreateDBStatistics();
 

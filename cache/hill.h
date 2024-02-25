@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <iterator>
 #include <list>
 #include <map>
 #include <memory>
@@ -482,17 +483,32 @@ class HillSubReplacer {
       }
     } else {
       // evict item in top list
+      int attempts = 15;
+      std::string evict_key; // = top_lru_.back();
+      int evict_level{-1}; // = real_map_[evict_key].insert_level;
+      std::list<std::string>::iterator evicted_iter;
       assert(top_lru_.size());
-      std::string evict_key = top_lru_.back();
-      top_lru_.pop_back();
-      int evict_level = real_map_[evict_key].insert_level;
-      if (evicted_handle) {
-        *evicted_handle = real_map_[evict_key].h_;
+      for (auto iter = top_lru_.rbegin(); iter != top_lru_.rend() && attempts; iter++, attempts--) {
+        std::string &key = *iter;
+        auto &entry = real_map_[key];
+        if (entry.h_->HasRefs()) {
+          continue;
+        }
+        evict_level = entry.insert_level;
+        evicted_iter = iter.base();
+        evict_key = key;
+        break;
       }
-      real_map_.erase(evict_key);
-      // move to ghost
-      if (ghost_size_ != 0 && evict_level != 0) {
-        MoveToGhost(evict_key, evict_level);
+      if (evict_level != -1) {
+        top_lru_.erase(evicted_iter);
+        if (evicted_handle) {
+          *evicted_handle = real_map_[evict_key].h_;
+        }
+        real_map_.erase(evict_key);
+        // move to ghost
+        if (ghost_size_ != 0 && evict_level != 0) {
+          MoveToGhost(evict_key, evict_level);
+        }
       }
     }
   }
@@ -858,7 +874,7 @@ class HillCache
         old->SetInCache(false);
         //// assert(hill_replacer_.get(old->key().ToString()) == nullptr);
         usage_ -= old->total_charge;
-        last_reference_list.push_back(old);
+        // last_reference_list.push_back(old);
       }
 
       if (usage_ + e->total_charge > capacity_ &&
