@@ -1199,7 +1199,7 @@ TEST_P(CacheTest, InRocksDBZipfDistributeShardHill) {
   ShardedHillCacheOptions hill_opt;
   // hill_opt.mru_threshold = -1;
   // hill_opt.top_ratio = 0.05f;
-  hill_opt.num_shard_bits = 0;
+  hill_opt.num_shard_bits = 2;
   hill_opt.capacity = 1 * kMegabyte;
   std::shared_ptr<Cache> cache = hill_opt.MakeHillCache();
   BlockBasedTableOptions table_options;

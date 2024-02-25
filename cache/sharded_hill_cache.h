@@ -959,10 +959,10 @@ public:
         usage_ -= e->total_charge;
         hill_replacer_.Remove(e->key().ToString());
       } else {
-        if (!erase_if_last_ref) {
-          assert(hill_replacer_.get(e->key().ToString()) != nullptr);
+        // if (!erase_if_last_ref) {
+          // assert(hill_replacer_.get(e->key().ToString()) != nullptr);
           hill_replacer_.Touch(e->key().ToString(), e);
-        }
+        // }
       }
     }
     // Free the entry here outside of mutex for performance reasons.
@@ -974,7 +974,7 @@ public:
 
   virtual bool Ref(HillHandle* handle) {
     DMutexLock l(mutex_);
-    auto h = reinterpret_cast<HillHandle*>(handle);
+    auto h = handle;
     //// assert(h->HasRefs());
     h->Ref();
     return true;
@@ -1002,8 +1002,6 @@ public:
     abort();
     return nullptr;
   }
-
-  // virtual uint64_t NewId() override { return 0; }
 
   virtual void SetCapacity(size_t capacity) {
     std::cout << "Unsupported!";
@@ -1071,9 +1069,6 @@ public:
                                size_t charge,
                                const Cache::CacheItemHelper* helper)>& callback,
       size_t average_entries_per_lock, size_t* state) {
-    // std::cout << "Unsupporteded!";
-    // abort();
-    // std::cout << "ApplyToSomeEntries Unsupporteded!";
     *state = SIZE_MAX;
   }
   double GetHitRate() { return (double)hit_c / total_c; }
@@ -1084,13 +1079,6 @@ public:
                            Cache::ObjectPtr value,
                            const Cache::CacheItemHelper* helper,
                            size_t charge) {
-    //// assert(helper);
-    // value == nullptr is reserved for indicating failure in SecondaryCache
-    //// assert(!(helper->IsSecondaryCacheCompatible() && value == nullptr));
-
-    // Allocate the memory here outside of the mutex.
-    // If the cache is full, we'll have to release it.
-    // It shouldn't happen very often though.
     HillHandle* e =
         static_cast<HillHandle*>(malloc(sizeof(HillHandle) - 1 + key.size()));
 
@@ -1115,168 +1103,7 @@ public:
   std::atomic<uint64_t> usage_;
   uint64_t hit_c = 0;
   uint64_t total_c = 0;
-  // std::unordered_map<std::string, HillHandle*> table_;
 };
-
-// A single shard of sharded cache.
-// class ALIGN_AS(CACHE_LINE_SIZE) HillCacheShard final : public CacheShardBase {
-//  public:
-//   // NOTE: the eviction_callback ptr is saved, as is it assumed to be kept
-//   // alive in Cache.
-//   HillCacheShard(size_t capacity, bool strict_capacity_limit,
-//                 double high_pri_pool_ratio, double low_pri_pool_ratio,
-//                 bool use_adaptive_mutex,
-//                 CacheMetadataChargePolicy metadata_charge_policy,
-//                 int max_upper_hash_bits, MemoryAllocator* allocator,
-//                 const Cache::EvictionCallback* eviction_callback);
-
-//  public:  // Type definitions expected as parameter to ShardedCache
-  
-//   uint64_t hit_c = 0;
-//   uint64_t total_c = 0;
-
-//  public:  // Function definitions expected as parameter to ShardedCache
-//   static inline HashVal ComputeHash(const Slice& key, uint32_t seed) {
-//     return Lower32of64(GetSliceNPHash64(key, seed));
-//   }
-
-//   // Separate from constructor so caller can easily make an array of LRUCache
-//   // if current usage is more than new capacity, the function will attempt to
-//   // free the needed space.
-//   void SetCapacity(size_t capacity);
-
-//   // Like Cache methods, but with an extra "hash" parameter.
-//   Status Insert(const Slice& key, uint32_t hash, Cache::ObjectPtr value,
-//                 const Cache::CacheItemHelper* helper, size_t charge,
-//                 LRUHandle** handle, Cache::Priority priority);
-
-//   LRUHandle* CreateStandalone(const Slice& key, uint32_t hash,
-//                               Cache::ObjectPtr obj,
-//                               const Cache::CacheItemHelper* helper,
-//                               size_t charge, bool allow_uncharged);
-
-//   LRUHandle* Lookup(const Slice& key, uint32_t hash,
-//                     const Cache::CacheItemHelper* helper,
-//                     Cache::CreateContext* create_context,
-//                     Cache::Priority priority, Statistics* stats);
-
-//   bool Release(LRUHandle* handle, bool useful, bool erase_if_last_ref);
-//   bool Ref(LRUHandle* handle);
-//   void Erase(const Slice& key, uint32_t hash);
-
-//   // Although in some platforms the update of size_t is atomic, to make sure
-//   // GetUsage() and GetPinnedUsage() work correctly under any platform, we'll
-//   // protect them with mutex_.
-
-//   size_t GetUsage() const;
-//   size_t GetPinnedUsage() const;
-//   size_t GetOccupancyCount() const;
-//   size_t GetTableAddressCount() const;
-
-//   void ApplyToSomeEntries(
-//       const std::function<void(const Slice& key, Cache::ObjectPtr value,
-//                                size_t charge,
-//                                const Cache::CacheItemHelper* helper)>& callback,
-//       size_t average_entries_per_lock, size_t* state);
-
-//   void EraseUnRefEntries();
-
-//  public:  // other function definitions
- 
-//   void AppendPrintableOptions(std::string& /*str*/) const;
-
-//   double GetHitRate() { return (double)hit_c / total_c; }
-
-//  private:
-//   friend class LRUCache;
-//   // Insert an item into the hash table and, if handle is null, insert into
-//   // the LRU list. Older items are evicted as necessary. Frees `item` on
-//   // non-OK status.
-//   Status InsertItem(LRUHandle* item, LRUHandle** handle);
-
-//   void LRU_Remove(LRUHandle* e);
-//   void LRU_Insert(LRUHandle* e);
-
-//   // Overflow the last entry in high-pri pool to low-pri pool until size of
-//   // high-pri pool is no larger than the size specify by high_pri_pool_pct.
-//   void MaintainPoolSize();
-
-//   // Free some space following strict LRU policy until enough space
-//   // to hold (usage_ + charge) is freed or the lru list is empty
-//   // This function is not thread safe - it needs to be executed while
-//   // holding the mutex_.
-//   void EvictFromLRU(size_t charge, autovector<LRUHandle*>* deleted);
-
-//   void NotifyEvicted(const autovector<LRUHandle*>& evicted_handles);
-
-//   LRUHandle* CreateHandle(const Slice& key, uint32_t hash,
-//                           Cache::ObjectPtr value,
-//                           const Cache::CacheItemHelper* helper, size_t charge);
-
-//   // Initialized before use.
-//   size_t capacity_;
-
-//   // Memory size for entries in high-pri pool.
-//   size_t high_pri_pool_usage_;
-
-//   // Memory size for entries in low-pri pool.
-//   size_t low_pri_pool_usage_;
-
-//   // Whether to reject insertion if cache reaches its full capacity.
-//   bool strict_capacity_limit_;
-
-//   // Ratio of capacity reserved for high priority cache entries.
-//   double high_pri_pool_ratio_;
-
-//   // High-pri pool size, equals to capacity * high_pri_pool_ratio.
-//   // Remember the value to avoid recomputing each time.
-//   double high_pri_pool_capacity_;
-
-//   // Ratio of capacity reserved for low priority cache entries.
-//   double low_pri_pool_ratio_;
-
-//   // Low-pri pool size, equals to capacity * low_pri_pool_ratio.
-//   // Remember the value to avoid recomputing each time.
-//   double low_pri_pool_capacity_;
-
-//   // Dummy head of LRU list.
-//   // lru.prev is newest entry, lru.next is oldest entry.
-//   // LRU contains items which can be evicted, ie reference only by cache
-//   LRUHandle lru_;
-
-//   // Pointer to head of low-pri pool in LRU list.
-//   LRUHandle* lru_low_pri_;
-
-//   // Pointer to head of bottom-pri pool in LRU list.
-//   LRUHandle* lru_bottom_pri_;
-
-//   // ------------^^^^^^^^^^^^^-----------
-//   // Not frequently modified data members
-//   // ------------------------------------
-//   //
-//   // We separate data members that are updated frequently from the ones that
-//   // are not frequently updated so that they don't share the same cache line
-//   // which will lead into false cache sharing
-//   //
-//   // ------------------------------------
-//   // Frequently modified data members
-//   // ------------vvvvvvvvvvvvv-----------
-//   LRUHandleTable table_;
-
-//   // Memory size for entries residing in the cache.
-//   size_t usage_;
-
-//   // Memory size for entries residing only in the LRU list.
-//   size_t lru_usage_;
-
-//   // mutex_ protects the following state.
-//   // We don't count mutex_ as the cache's internal state so semantically we
-//   // don't mind mutex_ invoking the non-const actions.
-//   mutable DMutex mutex_;
-
-//   // A reference to Cache::eviction_callback_
-//   const Cache::EvictionCallback& eviction_callback_;
-// };
 
 class ShardedHillCache
 #ifdef NDEBUG
