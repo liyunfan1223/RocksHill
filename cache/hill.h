@@ -412,30 +412,55 @@ class HillSubReplacer {
     // evict key in real
     if (min_level_non_empty_ < max_points_) {
       // evict item in multi level LRU
+      std::list<std::string>::iterator evicted_iter;
       std::string evict_key;
-      int evict_level{};
-      int mx_ts = 0;
+      int evict_level{-1};
+      // int mx_ts = 0;
       bool front = false;
       if (min_level_non_empty_ <= mru_threshold_) {
         front = true;
-        for (int i = min_level_non_empty_; i < max_points_; i++) {
+        int attempts = 15;
+        for (int i = min_level_non_empty_; i < max_points_ && attempts; i++) {
           if (real_lru_[i].empty()) {
             continue;
           }
           // MRU
-          if (real_map_[real_lru_[i].front()].insert_ts > mx_ts) {
-            mx_ts = real_map_[real_lru_[i].front()].insert_ts;
-            evict_key = real_lru_[i].front();
+          for (auto iter = real_lru_[i].begin(); iter != real_lru_[i].end() && attempts; iter++, attempts--) {
+            std::string &key = *iter;
+            auto &entry = real_map_[key];
+            if (entry.h_->HasRefs()) {
+              continue;
+            }
             evict_level = i;
+            evicted_iter = iter;
+            evict_key = key;
+            break;
           }
-          break;
+          if (!attempts) {
+            std::cout << "Attempt to evict failed." << '\n';
+            return;
+          }
+          if (evict_level != -1) {
+            break;
+          }
+          // if (real_map_[real_lru_[i].front()].insert_ts > mx_ts) {
+          //   // mx_ts = real_map_[real_lru_[i].front()].insert_ts;
+          //   evict_key = real_lru_[i].front();
+          //   evict_level = i;
+          // }
+          // break;
         }
       } else {
         evict_key = real_lru_[min_level_non_empty_].back();
         evict_level = min_level_non_empty_;
       }
       if (front) {
-        real_lru_[evict_level].pop_front();
+        if (evict_level == -1) {
+          std::cout << "Attempt to evict failed." << '\n';
+          return;
+        }
+        // real_lru_[evict_level].pop_front();
+        real_lru_[evict_level].erase(evicted_iter);
       } else {
         real_lru_[evict_level].pop_back();
       }
@@ -727,9 +752,10 @@ class HillReplacer : public Replacer {
     //// assert(replacer_r_.Get(key) == nullptr);
     //// assert(replacer_s_.Get(key) == nullptr);
   }
-  void Touch(const std::string& key) {
+  void Touch(const std::string& key, HillHandle *e) {
     // std::cout << "touch";
-    replacer_r_.Touch(key);
+    // replacer_r_.Touch(key);
+    replacer_r_.Access(key, e);
     // assert(replacer_r_.ghost_map_.find(key) != replacer_r_.ghost_map_.end());
   }
   void Insert(const std::string& key, HillHandle* h) {
@@ -741,7 +767,7 @@ class HillReplacer : public Replacer {
   bool IsFull() { return replacer_r_.IsFull(); }
   int EvictableCount() { return replacer_r_.real_map_.size(); }
   HillHandle* EvictOne() {
-    HillHandle* evicted_handle;
+    HillHandle* evicted_handle = nullptr;
     replacer_r_.Evict(&evicted_handle);
     // if (replacer_s_.real_map_.size() - replacer_s_.top_lru_.size()) {
     //   replacer_s_.Evict();
@@ -821,6 +847,9 @@ class HillCache
       while ((usage_ + e->total_charge) > capacity_ &&
              hill_replacer_.EvictableCount()) {
         HillHandle* old = hill_replacer_.EvictOne();
+        if (old == nullptr) {
+          break;
+        }
         // std::cout << "OldKey: " << old->key().ToString(true) << '\n';
         //// assert(table_.find(old->key().ToString()) != table_.end());
         //// assert(old->InCache() && !old->HasRefs());
@@ -868,6 +897,7 @@ class HillCache
         } else {
           if (!e->HasRefs()) {
             e->Ref();
+            hill_replacer_.Insert(e->key().ToString(), e);
           }
           *handle = e;
         }
@@ -897,7 +927,7 @@ class HillCache
       if (e != nullptr) {
         //// assert(e->InCache());
         if (!e->HasRefs()) {
-          hill_replacer_.Remove(k);
+          // hill_replacer_.Remove(k);
         }
         e->Ref();
         e->SetHit();
@@ -931,7 +961,7 @@ class HillCache
           e->SetInCache(false);
           //// assert(hill_replacer_.get(e->key().ToString()) == nullptr);
         } else {
-          hill_replacer_.Insert(e->key().ToString(), e);
+          // hill_replacer_.Touch(e->key().ToString(), e);
           //// assert(e->InCache());
           //// assert(table_.find(e->key().ToString()) != table_.end());
           must_free = false;
@@ -941,9 +971,10 @@ class HillCache
         // free(e);
         // //// assert(usage_ >= e->total_charge);
         usage_ -= e->total_charge;
+        hill_replacer_.Remove(e->key().ToString());
         // std::cout << usage_.load() << '\n';
       } else {
-        hill_replacer_.Touch(e->key().ToString());
+        hill_replacer_.Touch(e->key().ToString(), e);
       }
     }
     // Free the entry here outside of mutex for performance reasons.
