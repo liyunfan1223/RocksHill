@@ -3148,7 +3148,6 @@ class Benchmark {
           false /*strict_capacity_limit*/, FLAGS_cache_high_pri_pool_ratio,
           GetCacheAllocator(), kDefaultToAdaptiveMutex,
           kDefaultCacheMetadataChargePolicy, FLAGS_cache_low_pri_pool_ratio);
-      opts.num_shard_bits = 0;
       opts.hash_seed = GetCacheHashSeed();
       if (use_tiered_cache) {
         TieredCacheOptions tiered_opts;
