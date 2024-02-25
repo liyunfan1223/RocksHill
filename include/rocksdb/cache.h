@@ -304,6 +304,23 @@ struct HillCacheOptions : public ShardedCacheOptions {
   std::shared_ptr<Cache> MakeHillCache() const;
 };
 
+struct ShardedHillCacheOptions : public ShardedCacheOptions {
+  int32_t stats_interval = -1;
+  double init_half = 16.0f;
+  double hit_point = 1.0f;
+  int32_t max_points_bits = 6;
+  double ghost_size_ratio = 4.0f;
+  double lambda = 1.0f;
+  double simulator_ratio = 0.67f;
+  double top_ratio = 0.05f;
+  double delta_bound = 0.01f;
+  bool update_equals_size = true;
+  int32_t mru_threshold = 64;
+  int32_t minimal_update_size = 10000;
+
+  std::shared_ptr<Cache> MakeHillCache() const;
+};
+
 // EXPERIMENTAL
 // Options structure for configuring a SecondaryCache instance with in-memory
 // compression. The implementation uses LRUCache so inherits its options,

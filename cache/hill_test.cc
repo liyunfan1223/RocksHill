@@ -24,6 +24,7 @@
 #include "util/hash_containers.h"
 #include "util/string_util.h"
 #include "util/thread_operation.h"
+#include "cache/sharded_hill_cache.h"
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -1174,6 +1175,92 @@ TEST_P(CacheTest, InRocksDBZipfDistributeLRUBIG3) {
   block_cache_misses =
       stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
   std::cout << "LRU Block Cache Hit rate: "
+            << ((block_cache_hits + block_cache_misses == 0)
+                    ? 0
+                    : ((double)block_cache_hits /
+                       (block_cache_hits + block_cache_misses)))
+            << " hit: " << block_cache_hits << " miss: " << block_cache_misses
+            << "\n";
+  delete db;
+}
+
+TEST_P(CacheTest, InRocksDBZipfDistributeShardHill) {
+  DB* db;
+  Options options;
+  // Optimize RocksDB. This is the easiest way to get RocksDB to perform well
+  options.IncreaseParallelism();
+  options.OptimizeLevelStyleCompaction();
+  // create the DB if it's not already present
+  options.create_if_missing = true;
+  options.use_direct_reads = true;
+  options.use_direct_io_for_flush_and_compaction = true;
+  options.write_buffer_size = 128 * kKilobyte;
+  // NOTE: 创建HillCache
+  ShardedHillCacheOptions hill_opt;
+  // hill_opt.mru_threshold = -1;
+  // hill_opt.top_ratio = 0.05f;
+  hill_opt.num_shard_bits = 4;
+  hill_opt.capacity = 1 * kMegabyte;
+  std::shared_ptr<Cache> cache = hill_opt.MakeHillCache();
+  BlockBasedTableOptions table_options;
+  table_options.block_cache = cache;
+  options.table_factory.reset(NewBlockBasedTableFactory(table_options));
+  options.statistics = CreateDBStatistics();
+
+  // open DB
+  std::string kDBPath = "rocksdb_simple_example";
+  rocksdb::DestroyDB(kDBPath, rocksdb::Options());
+  Status s = DB::Open(options, kDBPath, &db);
+  assert(s.ok());
+  std::string randomString;
+  for (int i = 0; i < 16; i++) randomString += 'a';
+
+  rocksdb::Statistics* stats = db->GetDBOptions().statistics.get();
+
+  std::string value;
+  size_t key_num = 8 * 10000;
+  size_t access_num = 100000;
+  std::vector<int> ord = Zipf_GenData(key_num, access_num, 1.2);
+  for (size_t i = 0; i < key_num; i++) {
+    s = db->Put(WriteOptions(), std::to_string(i),
+                std::to_string(i) + randomString);
+  }
+  std::cout << "Start flushing" << "\n";
+  db->Flush(FlushOptions());
+  
+  uint64_t block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
+  uint64_t block_cache_misses =
+      stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
+  std::cout << "Hill Block Cache Hit rate: "
+            << ((block_cache_hits + block_cache_misses == 0)
+                    ? 0
+                    : ((double)block_cache_hits /
+                       (block_cache_hits + block_cache_misses)))
+            << " hit: " << block_cache_hits << " miss: " << block_cache_misses
+            << "\n";
+  std::cout << "Start reading" << "\n";
+  stats->Reset();
+  for (size_t i = 0; i < access_num; i++) {
+    int idx = ord[i];
+    s = db->Get(ReadOptions(), std::to_string(idx), &value);
+    if (i % 10000 == 0) {
+      block_cache_hits =
+          stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
+      block_cache_misses =
+          stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
+      std::cout << "Hill Block Cache Hit rate: "
+                << ((block_cache_hits + block_cache_misses == 0)
+                        ? 0
+                        : ((double)block_cache_hits /
+                           (block_cache_hits + block_cache_misses)))
+                << " hit: " << block_cache_hits
+                << " miss: " << block_cache_misses << "\n";
+    }
+  }
+  block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
+  block_cache_misses =
+      stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
+  std::cout << "Hill Block Cache Hit rate: "
             << ((block_cache_hits + block_cache_misses == 0)
                     ? 0
                     : ((double)block_cache_hits /

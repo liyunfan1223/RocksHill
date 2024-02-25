@@ -21,6 +21,7 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+
 // Optional base class for classes implementing the CacheShard concept
 class CacheShardBase {
  public:

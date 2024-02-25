@@ -3175,6 +3175,11 @@ class Benchmark {
       // opts.top_ratio = 1.0f;
       opts.capacity = capacity;
       block_cache = opts.MakeHillCache();
+    } else if (FLAGS_cache_type == "sharded_hill_cache") {
+      ShardedHillCacheOptions opts;
+      opts.capacity = capacity;
+      opts.num_shard_bits = FLAGS_cache_numshardbits;
+      block_cache = opts.MakeHillCache();
     } else {
       fprintf(stderr, "Cache type not supported.");
       exit(1);
