@@ -302,21 +302,23 @@ class HillSubReplacer {
       //// assert(key == h->key().ToString());
     }
     int32_t inserted_level = hit_points_;
-    if (real_map_.count(key) == 0) {
+    auto rm_iter = real_map_.find(key);
+    if (rm_iter == real_map_.end()) {
       // miss
       hit = false;
       interval_miss_count_++;
-      if (real_map_.size() == size_) {
-        // Evict();
-        // should never evict by replacer
-        // if (h) {
-        //// assert(false);
-        // }
-      }
-      if (ghost_map_.count(key) != 0) {
+      // if (real_map_.size() == size_) {
+      //   // Evict();
+      //   // should never evict by replacer
+      //   // if (h) {
+      //   //// assert(false);
+      //   // }
+      // }
+      auto gm_iter = ghost_map_.find(key);
+      if (gm_iter != ghost_map_.end()) {
         // use level in ghost
-        std::list<std::string>::iterator hit_iter = ghost_map_[key].key_iter;
-        int level = GetCurrentLevel(ghost_map_[key]);
+        std::list<std::string>::iterator hit_iter = gm_iter->second.key_iter;
+        int level = GetCurrentLevel(gm_iter->second);
         // erase key in ghost
         ghost_lru_.erase(hit_iter);
         ghost_map_.erase(key);
@@ -325,10 +327,10 @@ class HillSubReplacer {
     } else {
       // hit
       interval_hit_count_++;
-      if (!real_map_[key].h_recency) {
+      if (!rm_iter->second.h_recency) {
         h1++;
-        std::list<std::string>::iterator hit_iter = real_map_[key].key_iter;
-        int level = GetCurrentLevel(real_map_[key]);  // real_map_[key].second;
+        std::list<std::string>::iterator hit_iter = rm_iter->second.key_iter;
+        int level = GetCurrentLevel(rm_iter->second);  // real_map_[key].second;
         // erase key in real, use level in real
         real_lru_[level].erase(hit_iter);
         real_map_.erase(key);
@@ -340,8 +342,8 @@ class HillSubReplacer {
         // //// assert(min_level_non_empty_ < 10);
       } else {
         h2++;
-        inserted_level += real_map_[key].insert_level;
-        top_lru_.erase(real_map_[key].key_iter);
+        inserted_level += rm_iter->second.insert_level;
+        top_lru_.erase(rm_iter->second.key_iter);
         real_map_.erase(key);
       }
     }
@@ -349,8 +351,9 @@ class HillSubReplacer {
 
     if (top_lru_.size() >= lru_size_) {
       std::string& _key = top_lru_.back();
-      HillHandle* oldH = real_map_[_key].h_;
-      int lvl = real_map_[_key].insert_level;
+      auto &rm_entry = real_map_[_key];
+      HillHandle* oldH = rm_entry.h_;
+      int lvl = rm_entry.insert_level;
       real_lru_[lvl].push_front(_key);
       // NOTE: 这里应该是把key塞进去。
       real_map_[_key] =
