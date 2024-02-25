@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <climits>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -446,7 +447,7 @@ class HillSubReplacer {
             break;
           }
           if (!attempts) {
-            std::cout << "Attempt to evict failed." << '\n';
+            // std::cout << "Attempt to evict failed." << '\n';
             return;
           }
           if (evict_level != -1) {
@@ -465,7 +466,7 @@ class HillSubReplacer {
       }
       if (front) {
         if (evict_level == -1) {
-          std::cout << "Attempt to evict failed." << '\n';
+          // std::cout << "Attempt to evict failed." << '\n';
           return;
         }
         // real_lru_[evict_level].pop_front();
@@ -1306,11 +1307,6 @@ class ShardedHillCache
     auto h = reinterpret_cast<const HillHandle*>(handle);
     return h->helper;
   }
-
-  // Retrieves number of elements in LRU, for unit test purpose only.
-  size_t TEST_GetLRUSize();
-  // Retrieves high pri pool ratio.
-  double GetHighPriPoolRatio();
 };
 
 
