@@ -870,7 +870,7 @@ class HillCache
         //// assert(table_.find(old->key().ToString()) != table_.end());
         //// assert(old->InCache() && !old->HasRefs());
         // hill_replacer_.Remove(old->key().ToString());
-        table_.erase(old->key().ToString());
+        // table_.erase(old->key().ToString());
         old->SetInCache(false);
         //// assert(hill_replacer_.get(old->key().ToString()) == nullptr);
         usage_ -= old->total_charge;
@@ -890,11 +890,11 @@ class HillCache
           s = Status::MemoryLimit("Insert failed due to full cache");
         }
       } else {
-        HillHandle* old = nullptr;
-        if (table_.find(e->key().ToString()) != table_.end()) {
-          old = table_[e->key().ToString()];
-        }
-        table_[e->key().ToString()] = e;
+        HillHandle* old = hill_replacer_.get(e->key().ToString());
+        // if (table_.find(e->key().ToString()) != table_.end()) {
+        //   old = table_[e->key().ToString()];
+        // }
+        // table_[e->key().ToString()] = e;
         usage_ += e->total_charge;
 
         if (old != nullptr) {
@@ -909,7 +909,6 @@ class HillCache
         }
         if (handle == nullptr) {
           hill_replacer_.Insert(e->key().ToString(), e);
-          //// assert(table_.find(e->key().ToString()) != table_.end());
         } else {
           if (!e->HasRefs()) {
             e->Ref();
@@ -935,9 +934,10 @@ class HillCache
     HillHandle* e = nullptr;
     {
       DMutexLock l(mutex_);
-      if (table_.find(key.ToString()) != table_.end()) {
-        e = table_[key.ToString()];
-      }
+      // if (table_.find(key.ToString()) != table_.end()) {
+      //   e = table_[key.ToString()];
+      // }
+      e = hill_replacer_.get(key.ToString());
       // HillHandle* h = nullptr;
       total_c++;
       if (e != nullptr) {
@@ -973,7 +973,7 @@ class HillCache
       was_in_cache = e->InCache();
       if (must_free && was_in_cache) {
         if (usage_ > capacity_ || erase_if_last_ref) {
-          table_.erase(e->key().ToString());
+          // table_.erase(e->key().ToString());
           e->SetInCache(false);
           //// assert(hill_replacer_.get(e->key().ToString()) == nullptr);
         } else {
@@ -1121,7 +1121,7 @@ class HillCache
   CacheMetadataChargePolicy metadata_charge_policy_;
   uint64_t hit_c = 0;
   uint64_t total_c = 0;
-  std::unordered_map<std::string, HillHandle*> table_;
+  // std::unordered_map<std::string, HillHandle*> table_;
 };
 
 }  // namespace hill
