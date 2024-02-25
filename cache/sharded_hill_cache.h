@@ -829,7 +829,8 @@ class ALIGN_AS(CACHE_LINE_SIZE) HillCacheShard final : public CacheShardBase {
                        max_points_bits, ghost_size_ratio, lambda,
                        simulator_ratio, top_ratio, delta_bound,
                        update_equals_size, mru_threshold, minimal_update_size),
-        capacity_(buffer_size)
+        capacity_(buffer_size),
+        mutex_(true)
         {}
 public:
   using HandleImpl = HillHandle;
