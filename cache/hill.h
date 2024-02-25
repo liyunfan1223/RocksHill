@@ -309,7 +309,7 @@ class HillSubReplacer {
         // Evict();
         // should never evict by replacer
         // if (h) {
-          //// assert(false);
+        //// assert(false);
         // }
       }
       if (ghost_map_.count(key) != 0) {
@@ -347,7 +347,7 @@ class HillSubReplacer {
     inserted_level = std::min(inserted_level, max_points_ - 1);
 
     if (top_lru_.size() >= lru_size_) {
-      std::string _key = top_lru_.back();
+      std::string& _key = top_lru_.back();
       HillHandle* oldH = real_map_[_key].h_;
       int lvl = real_map_[_key].insert_level;
       real_lru_[lvl].push_front(_key);
@@ -448,7 +448,7 @@ class HillSubReplacer {
         MoveToGhost(evict_key, evict_level);
       }
       while (real_lru_[min_level_non_empty_].empty() &&
-            min_level_non_empty_ < max_points_) {
+             min_level_non_empty_ < max_points_) {
         min_level_non_empty_++;
       }
       if (evicted_handle) {
@@ -480,9 +480,9 @@ class HillSubReplacer {
   }
   void EvictGhost() {
     if (ghost_map_.size() >= ghost_size_) {
-      std::string _evict_key = ghost_lru_.back();
-      ghost_lru_.pop_back();
+      std::string& _evict_key = ghost_lru_.back();
       ghost_map_.erase(_evict_key);
+      ghost_lru_.pop_back();
     }
   }
 
@@ -552,13 +552,14 @@ class HillSubReplacer {
       MoveToGhost(evicted_key, evicted_level);
     }
   }
-  void Touch(const std::string &key) {
+  void Touch(const std::string& key) {
     if (ghost_map_.count(key) != 0) {
-      auto &entry = ghost_map_[key];
+      auto& entry = ghost_map_[key];
       int cur_l = GetCurrentLevel(entry);
       ghost_lru_.erase(entry.key_iter);
       ghost_lru_.push_front(key);
-      ghost_map_[key] = HillEntry(ghost_lru_.begin(), cur_l, cur_ts_, false, nullptr);
+      ghost_map_[key] =
+          HillEntry(ghost_lru_.begin(), cur_l, cur_ts_, false, nullptr);
     }
   }
   int h1{}, h2{};  // debug
@@ -726,7 +727,7 @@ class HillReplacer : public Replacer {
     //// assert(replacer_r_.Get(key) == nullptr);
     //// assert(replacer_s_.Get(key) == nullptr);
   }
-  void Touch(const std::string &key) {
+  void Touch(const std::string& key) {
     // std::cout << "touch";
     replacer_r_.Touch(key);
     // assert(replacer_r_.ghost_map_.find(key) != replacer_r_.ghost_map_.end());
@@ -738,9 +739,7 @@ class HillReplacer : public Replacer {
     // replacer_s_.Access(key, nullptr);
   }
   bool IsFull() { return replacer_r_.IsFull(); }
-  int EvictableCount() {
-    return replacer_r_.real_map_.size();
-  }
+  int EvictableCount() { return replacer_r_.real_map_.size(); }
   HillHandle* EvictOne() {
     HillHandle* evicted_handle;
     replacer_r_.Evict(&evicted_handle);
@@ -819,7 +818,8 @@ class HillCache
     // total_c++;
     {
       DMutexLock l(mutex_);
-      while ((usage_ + e->total_charge) > capacity_ && hill_replacer_.EvictableCount()) {
+      while ((usage_ + e->total_charge) > capacity_ &&
+             hill_replacer_.EvictableCount()) {
         HillHandle* old = hill_replacer_.EvictOne();
         // std::cout << "OldKey: " << old->key().ToString(true) << '\n';
         //// assert(table_.find(old->key().ToString()) != table_.end());
@@ -832,7 +832,8 @@ class HillCache
         last_reference_list.push_back(old);
       }
 
-      if (usage_ + e->total_charge > capacity_ && (strict_capacity_limit_ || handle == nullptr)) {
+      if (usage_ + e->total_charge > capacity_ &&
+          (strict_capacity_limit_ || handle == nullptr)) {
         e->SetInCache(false);
         //// assert(hill_replacer_.get(e->key().ToString()) == nullptr);
         if (handle == nullptr) {
@@ -1036,6 +1037,7 @@ class HillCache
   }
   double GetHitRate() { return (double)hit_c / total_c; }
   bool strict_capacity_limit_ = false;
+
  private:
   HillHandle* CreateHandle(const std::string& key, uint32_t hash,
                            Cache::ObjectPtr value,
