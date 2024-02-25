@@ -874,7 +874,7 @@ class HillCache
         old->SetInCache(false);
         //// assert(hill_replacer_.get(old->key().ToString()) == nullptr);
         usage_ -= old->total_charge;
-        // last_reference_list.push_back(old);
+        last_reference_list.push_back(old);
       }
 
       if (usage_ + e->total_charge > capacity_ &&
