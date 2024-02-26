@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "cache/lru_cache.h"
+#include "cache/sharded_hill_cache.h"
 #include "cache/typed_cache.h"
 #include "port/stack_trace.h"
 #include "rocksdb/cache.h"
@@ -24,7 +25,6 @@
 #include "util/hash_containers.h"
 #include "util/string_util.h"
 #include "util/thread_operation.h"
-#include "cache/sharded_hill_cache.h"
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -884,7 +884,7 @@ TEST_P(CacheTest, InRocksDBZipfDistributeHillBIG2) {
                 std::to_string(i) + randomString);
   }
   db->Flush(FlushOptions());
-  
+
   uint64_t block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
   uint64_t block_cache_misses =
       stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
@@ -895,16 +895,15 @@ TEST_P(CacheTest, InRocksDBZipfDistributeHillBIG2) {
                        (block_cache_hits + block_cache_misses)))
             << " hit: " << block_cache_hits << " miss: " << block_cache_misses
             << "\n";
-  std::cout << "Start reading" << "\n";
+  std::cout << "Start reading"
+            << "\n";
   stats->Reset();
   for (size_t i = 0; i < access_num; i++) {
     int idx = ord[i];
     s = db->Get(ReadOptions(), std::to_string(idx), &value);
     if (i % 10000 == 0) {
-      block_cache_hits =
-          stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
-      block_cache_misses =
-          stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
+      block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
+      block_cache_misses = stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
       std::cout << "Hill Block Cache Hit rate: "
                 << ((block_cache_hits + block_cache_misses == 0)
                         ? 0
@@ -915,8 +914,7 @@ TEST_P(CacheTest, InRocksDBZipfDistributeHillBIG2) {
     }
   }
   block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
-  block_cache_misses =
-      stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
+  block_cache_misses = stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
   std::cout << "Hill Block Cache Hit rate: "
             << ((block_cache_hits + block_cache_misses == 0)
                     ? 0
@@ -980,16 +978,15 @@ TEST_P(CacheTest, InRocksDBZipfDistributeLRUBIG2) {
                        (block_cache_hits + block_cache_misses)))
             << " hit: " << block_cache_hits << " miss: " << block_cache_misses
             << "\n";
-  std::cout << "Start reading" << "\n";
+  std::cout << "Start reading"
+            << "\n";
   stats->Reset();
   for (size_t i = 0; i < access_num; i++) {
     int idx = ord[i];
     s = db->Get(ReadOptions(), std::to_string(idx), &value);
     if (i % 10000 == 0) {
-      block_cache_hits =
-          stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
-      block_cache_misses =
-          stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
+      block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
+      block_cache_misses = stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
       std::cout << "LRU Block Cache Hit rate: "
                 << ((block_cache_hits + block_cache_misses == 0)
                         ? 0
@@ -1000,8 +997,7 @@ TEST_P(CacheTest, InRocksDBZipfDistributeLRUBIG2) {
     }
   }
   block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
-  block_cache_misses =
-      stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
+  block_cache_misses = stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
   std::cout << "LRU Block Cache Hit rate: "
             << ((block_cache_hits + block_cache_misses == 0)
                     ? 0
@@ -1056,7 +1052,7 @@ TEST_P(CacheTest, InRocksDBZipfDistributeHillBIG3) {
                 std::to_string(i) + randomString);
   }
   db->Flush(FlushOptions());
-  
+
   uint64_t block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
   uint64_t block_cache_misses =
       stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
@@ -1067,16 +1063,15 @@ TEST_P(CacheTest, InRocksDBZipfDistributeHillBIG3) {
                        (block_cache_hits + block_cache_misses)))
             << " hit: " << block_cache_hits << " miss: " << block_cache_misses
             << "\n";
-  std::cout << "Start reading" << "\n";
+  std::cout << "Start reading"
+            << "\n";
   stats->Reset();
   for (size_t i = 0; i < access_num; i++) {
     int idx = ord[i];
     s = db->Get(ReadOptions(), std::to_string(idx), &value);
     if (i % 10000 == 0) {
-      block_cache_hits =
-          stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
-      block_cache_misses =
-          stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
+      block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
+      block_cache_misses = stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
       std::cout << "Hill Block Cache Hit rate: "
                 << ((block_cache_hits + block_cache_misses == 0)
                         ? 0
@@ -1087,8 +1082,7 @@ TEST_P(CacheTest, InRocksDBZipfDistributeHillBIG3) {
     }
   }
   block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
-  block_cache_misses =
-      stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
+  block_cache_misses = stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
   std::cout << "Hill Block Cache Hit rate: "
             << ((block_cache_hits + block_cache_misses == 0)
                     ? 0
@@ -1152,16 +1146,15 @@ TEST_P(CacheTest, InRocksDBZipfDistributeLRUBIG3) {
                        (block_cache_hits + block_cache_misses)))
             << " hit: " << block_cache_hits << " miss: " << block_cache_misses
             << "\n";
-  std::cout << "Start reading" << "\n";
+  std::cout << "Start reading"
+            << "\n";
   stats->Reset();
   for (size_t i = 0; i < access_num; i++) {
     int idx = ord[i];
     s = db->Get(ReadOptions(), std::to_string(idx), &value);
     if (i % 10000 == 0) {
-      block_cache_hits =
-          stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
-      block_cache_misses =
-          stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
+      block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
+      block_cache_misses = stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
       std::cout << "LRU Block Cache Hit rate: "
                 << ((block_cache_hits + block_cache_misses == 0)
                         ? 0
@@ -1172,8 +1165,7 @@ TEST_P(CacheTest, InRocksDBZipfDistributeLRUBIG3) {
     }
   }
   block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
-  block_cache_misses =
-      stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
+  block_cache_misses = stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
   std::cout << "LRU Block Cache Hit rate: "
             << ((block_cache_hits + block_cache_misses == 0)
                     ? 0
@@ -1225,9 +1217,10 @@ TEST_P(CacheTest, InRocksDBZipfDistributeShardHill) {
     s = db->Put(WriteOptions(), std::to_string(i),
                 std::to_string(i) + randomString);
   }
-  std::cout << "Start flushing" << "\n";
+  std::cout << "Start flushing"
+            << "\n";
   db->Flush(FlushOptions());
-  
+
   uint64_t block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
   uint64_t block_cache_misses =
       stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
@@ -1238,16 +1231,15 @@ TEST_P(CacheTest, InRocksDBZipfDistributeShardHill) {
                        (block_cache_hits + block_cache_misses)))
             << " hit: " << block_cache_hits << " miss: " << block_cache_misses
             << "\n";
-  std::cout << "Start reading" << "\n";
+  std::cout << "Start reading"
+            << "\n";
   stats->Reset();
   for (size_t i = 0; i < access_num; i++) {
     int idx = ord[i];
     s = db->Get(ReadOptions(), std::to_string(idx), &value);
     if (i % 10000 == 0) {
-      block_cache_hits =
-          stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
-      block_cache_misses =
-          stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
+      block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
+      block_cache_misses = stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
       std::cout << "Hill Block Cache Hit rate: "
                 << ((block_cache_hits + block_cache_misses == 0)
                         ? 0
@@ -1258,8 +1250,7 @@ TEST_P(CacheTest, InRocksDBZipfDistributeShardHill) {
     }
   }
   block_cache_hits = stats->getTickerCount(rocksdb::BLOCK_CACHE_HIT);
-  block_cache_misses =
-      stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
+  block_cache_misses = stats->getTickerCount(rocksdb::BLOCK_CACHE_MISS);
   std::cout << "Hill Block Cache Hit rate: "
             << ((block_cache_hits + block_cache_misses == 0)
                     ? 0

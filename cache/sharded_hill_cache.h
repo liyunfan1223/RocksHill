@@ -28,12 +28,8 @@
 #include "port/likely.h"
 #include "port/malloc.h"
 #include "port/port.h"
-#include "rocksdb/cache.h"
-#include "util/autovector.h"
-#include "util/distributed_mutex.h"
-#include "cache/sharded_cache.h"
-#include "port/malloc.h"
 #include "rocksdb/advanced_cache.h"
+#include "rocksdb/cache.h"
 #include "rocksdb/slice.h"
 #include "util/autovector.h"
 #include "util/distributed_mutex.h"
@@ -41,7 +37,6 @@
 namespace ROCKSDB_NAMESPACE {
 
 namespace sharded_hill_cache {
-
 
 const double EPSILON = 1e-10;
 
@@ -357,7 +352,7 @@ class HillSubReplacer {
 
     if (top_lru_.size() >= lru_size_) {
       std::string& _key = top_lru_.back();
-      auto &rm_entry = real_map_[_key];
+      auto& rm_entry = real_map_[_key];
       HillHandle* oldH = rm_entry.h_;
       int lvl = rm_entry.insert_level;
       real_lru_[lvl].push_front(_key);
@@ -435,9 +430,10 @@ class HillSubReplacer {
             continue;
           }
           // MRU
-          for (auto iter = real_lru_[i].begin(); iter != real_lru_[i].end() && attempts; iter++, attempts--) {
-            std::string &key = *iter;
-            auto &entry = real_map_[key];
+          for (auto iter = real_lru_[i].begin();
+               iter != real_lru_[i].end() && attempts; iter++, attempts--) {
+            std::string& key = *iter;
+            auto& entry = real_map_[key];
             if (entry.h_->HasRefs()) {
               continue;
             }
@@ -493,18 +489,21 @@ class HillSubReplacer {
     } else {
       // evict item in top list
       int attempts = 15;
-      std::string evict_key; // = top_lru_.back();
-      int evict_level{-1}; // = real_map_[evict_key].insert_level;
+      std::string evict_key;  // = top_lru_.back();
+      int evict_level{-1};    // = real_map_[evict_key].insert_level;
       std::list<std::string>::iterator evicted_iter;
       assert(top_lru_.size());
-      for (auto iter = top_lru_.rbegin(); iter != top_lru_.rend() && attempts; iter++, attempts--) {
-        std::string &key = *iter;
-        auto &entry = real_map_[key];
+      for (auto iter = top_lru_.end();
+           iter != top_lru_.begin() && attempts > 0;) {
+        --iter;
+        std::string& key = *iter;
+        auto& entry = real_map_[key];
         if (entry.h_->HasRefs()) {
+          --attempts;
           continue;
         }
         evict_level = entry.insert_level;
-        evicted_iter = iter.base();
+        evicted_iter = iter;
         evict_key = key;
         break;
       }
@@ -772,10 +771,8 @@ class HillReplacer : public Replacer {
     return handle;
   }
 
-  void Remove(const std::string& key) {
-    replacer_r_.Remove(key);
-  }
-  void Touch(const std::string& key, HillHandle *e) {
+  void Remove(const std::string& key) { replacer_r_.Remove(key); }
+  void Touch(const std::string& key, HillHandle* e) {
     replacer_r_.Access(key, e);
   }
   void Insert(const std::string& key, HillHandle* h) {
@@ -816,31 +813,33 @@ class HillReplacer : public Replacer {
 //   // 默认块大小为 4 KB
 class ALIGN_AS(CACHE_LINE_SIZE) HillCacheShard final : public CacheShardBase {
   HillCacheShard(uint64_t buffer_size, int32_t _stats_interval = 1000,
-            double init_half = 16.0f, double hit_point = 1.0f,
-            int32_t max_points_bits = 6, double ghost_size_ratio = 4.0f,
-            double lambda = 1.0f, double simulator_ratio = 0.67f,
-            double top_ratio = 0.05f, double delta_bound = 0.01f,
-            bool update_equals_size = true, int32_t mru_threshold = 64,
-            int32_t minimal_update_size = 10000,
-            std::shared_ptr<MemoryAllocator> memory_allocator = nullptr,
-            CacheMetadataChargePolicy metadata_charge_policy =
-                kDefaultCacheMetadataChargePolicy)
+                 double init_half = 16.0f, double hit_point = 1.0f,
+                 int32_t max_points_bits = 6, double ghost_size_ratio = 4.0f,
+                 double lambda = 1.0f, double simulator_ratio = 0.67f,
+                 double top_ratio = 0.05f, double delta_bound = 0.01f,
+                 bool update_equals_size = true, int32_t mru_threshold = 64,
+                 int32_t minimal_update_size = 10000,
+                 std::shared_ptr<MemoryAllocator> memory_allocator = nullptr,
+                 CacheMetadataChargePolicy metadata_charge_policy =
+                     kDefaultCacheMetadataChargePolicy)
       : CacheShardBase(metadata_charge_policy),
         hill_replacer_(buffer_size, _stats_interval, init_half, hit_point,
                        max_points_bits, ghost_size_ratio, lambda,
                        simulator_ratio, top_ratio, delta_bound,
                        update_equals_size, mru_threshold, minimal_update_size),
         capacity_(buffer_size),
-        mutex_(true)
-        {}
-public:
+        mutex_(true) {}
+
+ public:
   using HandleImpl = HillHandle;
   using HashVal = uint32_t;
   using HashCref = uint32_t;
   virtual Status Insert(
-      const Slice& key, uint32_t hash, Cache::ObjectPtr obj, const Cache::CacheItemHelper* helper,
-      size_t charge, HillHandle** handle = nullptr,
-      Cache::Priority priority = Cache::Priority::LOW, const Slice& compressed = Slice(),
+      const Slice& key, uint32_t hash, Cache::ObjectPtr obj,
+      const Cache::CacheItemHelper* helper, size_t charge,
+      HillHandle** handle = nullptr,
+      Cache::Priority priority = Cache::Priority::LOW,
+      const Slice& compressed = Slice(),
       CompressionType type = CompressionType::kNoCompression) {
     //
     auto&& k = key.ToString();
@@ -851,7 +850,7 @@ public:
     return InsertItem(e, reinterpret_cast<HillHandle**>(handle), k);
   }
 
-  Status InsertItem(HillHandle* e, HillHandle** handle, const std::string &k) {
+  Status InsertItem(HillHandle* e, HillHandle** handle, const std::string& k) {
     Status s = Status::OK();
     autovector<HillHandle*> last_reference_list;
     // total_c++;
@@ -884,14 +883,14 @@ public:
       } else {
         HillHandle* old = hill_replacer_.get(k);
         usage_ += e->total_charge;
-        
+
         if (old != nullptr) {
           s = Status::OkOverwritten();
           old->SetInCache(false);
           if (!old->HasRefs()) {
             hill_replacer_.Remove(old->key().ToString());
             usage_ -= old->total_charge;
-                        last_reference_list.push_back(old);
+            last_reference_list.push_back(old);
           }
         }
         if (handle == nullptr) {
@@ -912,10 +911,10 @@ public:
   }
 
   virtual HillHandle* Lookup(const Slice& key, uint32_t hash,
-                         const Cache::CacheItemHelper* helper = nullptr,
-                         Cache::CreateContext* create_context = nullptr,
-                         Cache::Priority priority = Cache::Priority::LOW,
-                         Statistics* stats = nullptr) {
+                             const Cache::CacheItemHelper* helper = nullptr,
+                             Cache::CreateContext* create_context = nullptr,
+                             Cache::Priority priority = Cache::Priority::LOW,
+                             Statistics* stats = nullptr) {
     auto&& k = key.ToString();
     HillHandle* e = nullptr;
     {
@@ -937,8 +936,8 @@ public:
       std::cout << "HillCache hit rate: " << (double)hit_c / total_c
                 << " R: " << hill_replacer_.replacer_r_.GetCurHalf()
                 << " Shard: " << this << '\n';
-      std::cout << hill_replacer_.replacer_r_.real_map_.size() << 
-      " " << hill_replacer_.replacer_r_.size_ << " " << usage_ << "\n";
+      std::cout << hill_replacer_.replacer_r_.real_map_.size() << " "
+                << hill_replacer_.replacer_r_.size_ << " " << usage_ << "\n";
     }
 #endif
     return reinterpret_cast<HillHandle*>(e);
@@ -965,11 +964,11 @@ public:
       }
       if (must_free) {
         usage_ -= e->total_charge;
-                hill_replacer_.Remove(e->key().ToString());
+        hill_replacer_.Remove(e->key().ToString());
       } else {
         // if (!erase_if_last_ref) {
-          // assert(hill_replacer_.get(e->key().ToString()) != nullptr);
-          // hill_replacer_.Touch(e->key().ToString(), e);
+        // assert(hill_replacer_.get(e->key().ToString()) != nullptr);
+        // hill_replacer_.Touch(e->key().ToString(), e);
         // }
       }
     }
@@ -1003,9 +1002,10 @@ public:
     abort();
   };
 
-  virtual HillHandle* CreateStandalone(const Slice& key, uint32_t hash, Cache::ObjectPtr obj,
-                                   const Cache::CacheItemHelper* helper, size_t charge,
-                                   bool allow_uncharged) {
+  virtual HillHandle* CreateStandalone(const Slice& key, uint32_t hash,
+                                       Cache::ObjectPtr obj,
+                                       const Cache::CacheItemHelper* helper,
+                                       size_t charge, bool allow_uncharged) {
     std::cout << "Unsupported!";
     abort();
     return nullptr;
@@ -1032,8 +1032,7 @@ public:
   virtual size_t GetUsage() const { return usage_; }
 
   virtual size_t GetUsage(HillHandle* handle) const {
-    return handle->GetCharge(
-        metadata_charge_policy_);
+    return handle->GetCharge(metadata_charge_policy_);
   }
 
   virtual size_t GetPinnedUsage() const {
@@ -1049,7 +1048,8 @@ public:
 
   // FIXME:
   virtual void ApplyToAllEntries(
-      const std::function<void(const Slice& key, Cache::ObjectPtr obj, size_t charge,
+      const std::function<void(const Slice& key, Cache::ObjectPtr obj,
+                               size_t charge,
                                const Cache::CacheItemHelper* helper)>& callback,
       const Cache::ApplyToAllEntriesOptions& opts) {
     std::cout << "ApplyToAllEntries Unsupported!\n";
@@ -1073,7 +1073,8 @@ public:
     return 0;
   }
 
-  void ApplyToSomeEntries(const std::function<void(const Slice& key, Cache::ObjectPtr value,
+  void ApplyToSomeEntries(
+      const std::function<void(const Slice& key, Cache::ObjectPtr value,
                                size_t charge,
                                const Cache::CacheItemHelper* helper)>& callback,
       size_t average_entries_per_lock, size_t* state) {
@@ -1120,24 +1121,27 @@ class ShardedHillCache
 #endif
     : public ShardedCache<HillCacheShard> {
  public:
-  explicit ShardedHillCache(const ShardedHillCacheOptions& opts): ShardedCache(opts) {
+  explicit ShardedHillCache(const ShardedHillCacheOptions& opts)
+      : ShardedCache(opts) {
     size_t per_shard = GetPerShardCapacity();
     MemoryAllocator* alloc = memory_allocator();
     InitShards([&](HillCacheShard* cs) {
-      new (cs) HillCacheShard(per_shard, opts.stats_interval, opts.init_half, 
-        opts.hit_point, opts.max_points_bits, opts.ghost_size_ratio, 
-        opts.lambda, opts.simulator_ratio, opts.top_ratio, opts.delta_bound,
-        opts.update_equals_size, opts.mru_threshold, opts.minimal_update_size);
+      new (cs) HillCacheShard(per_shard, opts.stats_interval, opts.init_half,
+                              opts.hit_point, opts.max_points_bits,
+                              opts.ghost_size_ratio, opts.lambda,
+                              opts.simulator_ratio, opts.top_ratio,
+                              opts.delta_bound, opts.update_equals_size,
+                              opts.mru_threshold, opts.minimal_update_size);
     });
   }
   const char* Name() const override { return "LRUCache"; }
   ObjectPtr Value(Handle* handle) override {
-      auto h = reinterpret_cast<const HillHandle*>(handle);
-      return h->value;
+    auto h = reinterpret_cast<const HillHandle*>(handle);
+    return h->value;
   }
   size_t GetCharge(Handle* handle) const override {
     return reinterpret_cast<const HillHandle*>(handle)->GetCharge(
-      GetShard(0).metadata_charge_policy_);
+        GetShard(0).metadata_charge_policy_);
   }
   const CacheItemHelper* GetCacheItemHelper(Handle* handle) const override {
     auto h = reinterpret_cast<const HillHandle*>(handle);
@@ -1145,7 +1149,6 @@ class ShardedHillCache
   }
 };
 
+}  // namespace sharded_hill_cache
 
-} // namespace sharded_hill_cache
-
-} // namespace ROCKSDB_NAMESPACE
+}  // namespace ROCKSDB_NAMESPACE

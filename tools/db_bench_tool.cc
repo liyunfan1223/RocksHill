@@ -3178,6 +3178,7 @@ class Benchmark {
     } else if (FLAGS_cache_type == "sharded_hill_cache") {
       ShardedHillCacheOptions opts;
       opts.capacity = capacity;
+      opts.init_half = 32.0f;
       opts.num_shard_bits = FLAGS_cache_numshardbits;
       block_cache = opts.MakeHillCache();
     } else {

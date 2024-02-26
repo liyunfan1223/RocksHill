@@ -351,7 +351,7 @@ class HillSubReplacer {
 
     if (top_lru_.size() >= lru_size_) {
       std::string& _key = top_lru_.back();
-      auto &rm_entry = real_map_[_key];
+      auto& rm_entry = real_map_[_key];
       HillHandle* oldH = rm_entry.h_;
       int lvl = rm_entry.insert_level;
       real_lru_[lvl].push_front(_key);
@@ -429,9 +429,10 @@ class HillSubReplacer {
             continue;
           }
           // MRU
-          for (auto iter = real_lru_[i].begin(); iter != real_lru_[i].end() && attempts; iter++, attempts--) {
-            std::string &key = *iter;
-            auto &entry = real_map_[key];
+          for (auto iter = real_lru_[i].begin();
+               iter != real_lru_[i].end() && attempts; iter++, attempts--) {
+            std::string& key = *iter;
+            auto& entry = real_map_[key];
             if (entry.h_->HasRefs()) {
               continue;
             }
@@ -487,13 +488,14 @@ class HillSubReplacer {
     } else {
       // evict item in top list
       int attempts = 15;
-      std::string evict_key; // = top_lru_.back();
-      int evict_level{-1}; // = real_map_[evict_key].insert_level;
+      std::string evict_key;  // = top_lru_.back();
+      int evict_level{-1};    // = real_map_[evict_key].insert_level;
       std::list<std::string>::iterator evicted_iter;
       assert(top_lru_.size());
-      for (auto iter = top_lru_.rbegin(); iter != top_lru_.rend() && attempts; iter++, attempts--) {
-        std::string &key = *iter;
-        auto &entry = real_map_[key];
+      for (auto iter = top_lru_.rbegin(); iter != top_lru_.rend() && attempts;
+           iter++, attempts--) {
+        std::string& key = *iter;
+        auto& entry = real_map_[key];
         if (entry.h_->HasRefs()) {
           continue;
         }
@@ -771,7 +773,7 @@ class HillReplacer : public Replacer {
     //// assert(replacer_r_.Get(key) == nullptr);
     //// assert(replacer_s_.Get(key) == nullptr);
   }
-  void Touch(const std::string& key, HillHandle *e) {
+  void Touch(const std::string& key, HillHandle* e) {
     // std::cout << "touch";
     // replacer_r_.Touch(key);
     replacer_r_.Access(key, e);

@@ -3,8 +3,8 @@
 // //
 
 #include "cache/sharded_hill_cache.h"
-#include "cache/hill.h"
 
+#include "cache/hill.h"
 #include "rocksdb/cache.h"
 
 namespace ROCKSDB_NAMESPACE {
@@ -14,9 +14,7 @@ std::shared_ptr<Cache> ShardedHillCacheOptions::MakeHillCache() const {
   if (opt.num_shard_bits < 0) {
     opt.num_shard_bits = 2;
   }
-  auto hill = 
-    std::make_shared<sharded_hill_cache::ShardedHillCache>(
-      opt);
+  auto hill = std::make_shared<sharded_hill_cache::ShardedHillCache>(opt);
   return hill;
 }
 
