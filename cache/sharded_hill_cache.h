@@ -658,6 +658,7 @@ class HillSubReplacer {
   int32_t mru_threshold_;
   friend class HillCache;
   friend class HillReplacer;
+  friend class HillCacheShard;
 };
 
 class HillReplacer : public Replacer {
@@ -864,6 +865,8 @@ public:
         }
         old->SetInCache(false);
         usage_ -= old->total_charge;
+        std::cout << usage_ << "!?!" << e->total_charge << std::endl;
+        assert(usage_ < 100000000);
         last_reference_list.push_back(old);
       }
 
@@ -881,14 +884,14 @@ public:
       } else {
         HillHandle* old = hill_replacer_.get(k);
         usage_ += e->total_charge;
-
+        
         if (old != nullptr) {
           s = Status::OkOverwritten();
           old->SetInCache(false);
           if (!old->HasRefs()) {
             hill_replacer_.Remove(old->key().ToString());
             usage_ -= old->total_charge;
-            last_reference_list.push_back(old);
+                        last_reference_list.push_back(old);
           }
         }
         if (handle == nullptr) {
@@ -925,13 +928,17 @@ public:
         }
         e->Ref();
         e->SetHit();
+        hill_replacer_.Touch(e->key().ToString(), e);
         hit_c++;
       }
     }
 #ifndef NDEBUG
     if (total_c % 10000 == 0) {
       std::cout << "HillCache hit rate: " << (double)hit_c / total_c
-                << " R: " << hill_replacer_.replacer_r_.GetCurHalf() << '\n';
+                << " R: " << hill_replacer_.replacer_r_.GetCurHalf()
+                << " Shard: " << this << '\n';
+      std::cout << hill_replacer_.replacer_r_.real_map_.size() << 
+      " " << hill_replacer_.replacer_r_.size_ << " " << usage_ << "\n";
     }
 #endif
     return reinterpret_cast<HillHandle*>(e);
@@ -958,11 +965,11 @@ public:
       }
       if (must_free) {
         usage_ -= e->total_charge;
-        hill_replacer_.Remove(e->key().ToString());
+                hill_replacer_.Remove(e->key().ToString());
       } else {
         // if (!erase_if_last_ref) {
           // assert(hill_replacer_.get(e->key().ToString()) != nullptr);
-          hill_replacer_.Touch(e->key().ToString(), e);
+          // hill_replacer_.Touch(e->key().ToString(), e);
         // }
       }
     }
@@ -1101,7 +1108,8 @@ public:
   uint64_t capacity_;
   mutable DMutex mutex_;
   std::shared_ptr<MemoryAllocator> const allocator_;
-  std::atomic<uint64_t> usage_;
+  // std::atomic<uint64_t> usage_{0};
+  uint64_t usage_ = 0;
   uint64_t hit_c = 0;
   uint64_t total_c = 0;
 };
