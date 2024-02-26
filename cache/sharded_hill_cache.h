@@ -865,7 +865,7 @@ public:
         }
         old->SetInCache(false);
         usage_ -= old->total_charge;
-        std::cout << usage_ << "!?!" << e->total_charge << std::endl;
+        // std::cout << usage_ << "!?!" << e->total_charge << std::endl;
         assert(usage_ < 100000000);
         last_reference_list.push_back(old);
       }
