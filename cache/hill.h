@@ -4,7 +4,6 @@
 
 #pragma once
 
-#include <rocksdb/status.h>
 #include <sys/time.h>
 
 #include <algorithm>
@@ -29,6 +28,7 @@
 #include "port/malloc.h"
 #include "rocksdb/advanced_cache.h"
 #include "rocksdb/slice.h"
+#include "rocksdb/status.h"
 #include "util/autovector.h"
 #include "util/distributed_mutex.h"
 namespace ROCKSDB_NAMESPACE {
