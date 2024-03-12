@@ -364,8 +364,8 @@ class HillSubReplacer {
       int lvl = rm_entry.insert_level;
       real_lru_[lvl].push_front(_key);
       // NOTE: 这里应该是把key塞进去。
-      real_map_[_key] =
-          HillEntry(real_lru_[lvl].begin(), lvl, cur_ts_, false, rm_entry.size_, oldH);
+      real_map_[_key] = HillEntry(real_lru_[lvl].begin(), lvl, cur_ts_, false,
+                                  rm_entry.size_, oldH);
       // usage_ += rm_entry.size_;
       if (lvl < min_level_non_empty_) {
         min_level_non_empty_ = lvl;
@@ -432,7 +432,7 @@ class HillSubReplacer {
       int evict_level{-1};
       // int mx_ts = 0;
       bool front = false;
-      HillEntry* evicted_entry;
+      HillEntry* evicted_entry = nullptr;
       if (min_level_non_empty_ <= mru_threshold_) {
         front = true;
         int attempts = 15;
@@ -624,8 +624,8 @@ class HillSubReplacer {
       int cur_l = GetCurrentLevel(entry);
       ghost_lru_.erase(entry.key_iter);
       ghost_lru_.push_front(key);
-      ghost_map_[key] =
-          HillEntry(ghost_lru_.begin(), cur_l, cur_ts_, false, entry.size_, nullptr);
+      ghost_map_[key] = HillEntry(ghost_lru_.begin(), cur_l, cur_ts_, false,
+                                  entry.size_, nullptr);
     }
   }
   int h1{}, h2{};  // debug
@@ -762,9 +762,9 @@ class HillReplacer : public Replacer {
     return RC::SUCCESS;
   }
 
-  RC EnsureBothReplacerFree(autovector<HillHandle*>* deleted, HillHandle* e, uint64_t capacity) {
-    while ((GetRealUsage() + e->total_charge) > capacity &&
-            EvictableCount()) {
+  RC EnsureBothReplacerFree(autovector<HillHandle*>* deleted, HillHandle* e,
+                            uint64_t capacity) {
+    while ((GetRealUsage() + e->total_charge) > capacity && EvictableCount()) {
       HillHandle* old = EvictOne();
       if (old == nullptr) {
         break;
@@ -775,9 +775,9 @@ class HillReplacer : public Replacer {
     }
     if (enable_virtual_) {
       while ((GetVirtualUsage() + e->total_charge) > capacity &&
-              VirtualEvictableCount()) {
+             VirtualEvictableCount()) {
         VirtualEvictOne();
-      }  
+      }
     }
     return RC::SUCCESS;
   }
@@ -787,8 +787,8 @@ class HillReplacer : public Replacer {
     return handle;
   }
 
-  void Remove(const std::string& key) { 
-    replacer_r_.Remove(key); 
+  void Remove(const std::string& key) {
+    replacer_r_.Remove(key);
     if (enable_virtual_) {
       replacer_s_.Remove(key);
     }
@@ -844,7 +844,8 @@ class HillReplacer : public Replacer {
     }
     replacer_s_.UpdateHalf(replacer_r_.GetCurHalf() * simulator_ratio_);
 #ifndef NDEBUG
-    std::cout << "Adjustment triggered, Real hit rate: " << r_hr << " Virtual hit rate: " << s_hr << " R: " << cur_half << "\n";
+    std::cout << "Adjustment triggered, Real hit rate: " << r_hr
+              << " Virtual hit rate: " << s_hr << " R: " << cur_half << "\n";
 #endif
   }
   void Insert(const std::string& key, HillHandle* h) {
@@ -882,7 +883,7 @@ class HillReplacer : public Replacer {
   double delta_bound_;
   std::list<int64_t> hit_recorder;
   int64_t recorder_hit_count{};
-  
+
   bool enable_virtual_;
   // uint64_t vusage_ = 0;
   // uint64_t vhit_c = 0;
@@ -906,7 +907,8 @@ class ALIGN_AS(CACHE_LINE_SIZE) HillCacheShard final : public CacheShardBase {
                  double lambda = 1.0f, double simulator_ratio = 0.67f,
                  double top_ratio = 0.05f, double delta_bound = 0.01f,
                  bool update_equals_size = true, int32_t mru_threshold = 64,
-                 int32_t minimal_update_size = 10000, bool enable_virtual = false,
+                 int32_t minimal_update_size = 10000,
+                 bool enable_virtual = false,
                  std::shared_ptr<MemoryAllocator> memory_allocator = nullptr,
                  CacheMetadataChargePolicy metadata_charge_policy =
                      kDefaultCacheMetadataChargePolicy)
@@ -914,7 +916,8 @@ class ALIGN_AS(CACHE_LINE_SIZE) HillCacheShard final : public CacheShardBase {
         hill_replacer_(buffer_size, _stats_interval, init_half, hit_point,
                        max_points_bits, ghost_size_ratio, lambda,
                        simulator_ratio, top_ratio, delta_bound,
-                       update_equals_size, mru_threshold, minimal_update_size, enable_virtual),
+                       update_equals_size, mru_threshold, minimal_update_size,
+                       enable_virtual),
         capacity_(buffer_size),
         mutex_(true) {}
 
@@ -1023,7 +1026,8 @@ class ALIGN_AS(CACHE_LINE_SIZE) HillCacheShard final : public CacheShardBase {
     //             << " R: " << hill_replacer_.replacer_r_.GetCurHalf()
     //             << " Shard: " << this << '\n';
     //   std::cout << hill_replacer_.replacer_r_.real_map_.size() << " "
-    //             << hill_replacer_.replacer_r_.size_ << " " << hill_replacer_.GetRealUsage() << "\n";
+    //             << hill_replacer_.replacer_r_.size_ << " " <<
+    //             hill_replacer_.GetRealUsage() << "\n";
     // }
 #endif
     return reinterpret_cast<HillHandle*>(e);
@@ -1216,12 +1220,12 @@ class ShardedHillCache
     size_t per_shard = GetPerShardCapacity();
     MemoryAllocator* alloc = memory_allocator();
     InitShards([&](HillCacheShard* cs) {
-      new (cs) HillCacheShard(per_shard, opts.stats_interval, opts.init_half,
-                              opts.hit_point, opts.max_points_bits,
-                              opts.ghost_size_ratio, opts.lambda,
-                              opts.simulator_ratio, opts.top_ratio,
-                              opts.delta_bound, opts.update_equals_size,
-                              opts.mru_threshold, opts.minimal_update_size, opts.enable_virtual);
+      new (cs) HillCacheShard(
+          per_shard, opts.stats_interval, opts.init_half, opts.hit_point,
+          opts.max_points_bits, opts.ghost_size_ratio, opts.lambda,
+          opts.simulator_ratio, opts.top_ratio, opts.delta_bound,
+          opts.update_equals_size, opts.mru_threshold, opts.minimal_update_size,
+          opts.enable_virtual);
     });
   }
   const char* Name() const override { return "LRUCache"; }
