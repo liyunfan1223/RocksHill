@@ -219,7 +219,7 @@ class Replacer {
     return s.str();
   }
 
-  virtual RC access(const std::string& key, HillHandle* h) = 0;
+  virtual RC access(const std::string& key, HillHandle* h, uint64_t size) = 0;
   virtual std::string get_name() = 0;
   virtual std::string get_configuration() { return {""}; }
   virtual RC check_consistency() { return RC::DEFAULT; }
@@ -240,7 +240,7 @@ class Replacer {
   int32_t miss_count_{};
   bool enable_interval_stats_{false};
   int32_t stats_interval{};
-  int ts{};
+  int64_t ts{};
 
  private:
   friend class HillCache;
@@ -255,23 +255,26 @@ class HillSubReplacer {
         insert_level = other.insert_level;
         insert_ts = other.insert_ts;
         h_recency = other.h_recency;
+        size_ = other.size_;
         h_ = other.h_;
       }
       return *this;
     }
     HillEntry(std::list<std::string>::iterator _key_iter, int _insert_level,
-              int _insert_ts, bool _h_recency, HillHandle* h) {
+              int _insert_ts, bool _h_recency, uint64_t _size, HillHandle* _h) {
       this->key_iter = _key_iter;
       this->insert_level = _insert_level;
       this->insert_ts = _insert_ts;
       this->h_recency = _h_recency;
-      this->h_ = h;
+      this->size_ = _size;
+      this->h_ = _h;
     }
 
     std::list<std::string>::iterator key_iter;
     int insert_level{};
     int insert_ts{};
     bool h_recency{};  // 高时近性 说明在顶层LRU中
+    uint64_t size_;
     HillHandle* h_;
   };
 
@@ -296,7 +299,7 @@ class HillSubReplacer {
     ml_size_ = size_ - lru_size_;
   }
 
-  int Access(const std::string& key, HillHandle* h) {
+  int Access(const std::string& key, HillHandle* h, uint64_t size) {
     bool hit = true;
     if (h) {
       //// assert(h->InCache());
@@ -331,8 +334,9 @@ class HillSubReplacer {
       if (!rm_iter->second.h_recency) {
         h1++;
         std::list<std::string>::iterator hit_iter = rm_iter->second.key_iter;
-        int level = GetCurrentLevel(rm_iter->second);  // real_map_[key].second;
+        int level = GetCurrentLevel(rm_iter->second);
         // erase key in real, use level in real
+        usage_ -= rm_iter->second.size_;
         real_lru_[level].erase(hit_iter);
         real_map_.erase(key);
         inserted_level += level;
@@ -345,6 +349,8 @@ class HillSubReplacer {
         h2++;
         inserted_level += rm_iter->second.insert_level;
         top_lru_.erase(rm_iter->second.key_iter);
+        top_lru_size_--;
+        usage_ -= rm_iter->second.size_;
         real_map_.erase(key);
       }
     }
@@ -352,13 +358,15 @@ class HillSubReplacer {
 
     if (top_lru_.size() >= lru_size_) {
       std::string& _key = top_lru_.back();
+      assert(real_map_.find(_key) != real_map_.end());
       auto& rm_entry = real_map_[_key];
       HillHandle* oldH = rm_entry.h_;
       int lvl = rm_entry.insert_level;
       real_lru_[lvl].push_front(_key);
       // NOTE: 这里应该是把key塞进去。
       real_map_[_key] =
-          HillEntry(real_lru_[lvl].begin(), lvl, cur_ts_, false, oldH);
+          HillEntry(real_lru_[lvl].begin(), lvl, cur_ts_, false, rm_entry.size_, oldH);
+      // usage_ += rm_entry.size_;
       if (lvl < min_level_non_empty_) {
         min_level_non_empty_ = lvl;
       }
@@ -370,8 +378,10 @@ class HillSubReplacer {
     //     std::cout << "Null value!, Key: " << Slice(key).ToString(true) <<
     //     "\n";
     // }
+    assert(real_map_.find(key) == real_map_.end());
     real_map_[key] =
-        HillEntry(top_lru_.begin(), inserted_level, cur_ts_, true, h);
+        HillEntry(top_lru_.begin(), inserted_level, cur_ts_, true, size, h);
+    usage_ += size;
     // auto entry = real_map_.find(key);
     // if(entry != real_map_.end()) {
     //     std::cout << "Insert: \nKey in: " << Slice(key).ToString(true) <<
@@ -422,6 +432,7 @@ class HillSubReplacer {
       int evict_level{-1};
       // int mx_ts = 0;
       bool front = false;
+      HillEntry* evicted_entry;
       if (min_level_non_empty_ <= mru_threshold_) {
         front = true;
         int attempts = 15;
@@ -434,12 +445,13 @@ class HillSubReplacer {
                iter != real_lru_[i].end() && attempts; iter++, attempts--) {
             std::string& key = *iter;
             auto& entry = real_map_[key];
-            if (entry.h_->HasRefs()) {
+            if (entry.h_ && entry.h_->HasRefs()) {
               continue;
             }
             evict_level = i;
             evicted_iter = iter;
             evict_key = key;
+            evicted_entry = &entry;
             break;
           }
           if (!attempts) {
@@ -449,12 +461,6 @@ class HillSubReplacer {
           if (evict_level != -1) {
             break;
           }
-          // if (real_map_[real_lru_[i].front()].insert_ts > mx_ts) {
-          //   // mx_ts = real_map_[real_lru_[i].front()].insert_ts;
-          //   evict_key = real_lru_[i].front();
-          //   evict_level = i;
-          // }
-          // break;
         }
       } else {
         evict_key = real_lru_[min_level_non_empty_].back();
@@ -471,12 +477,14 @@ class HillSubReplacer {
         real_lru_[evict_level].pop_back();
       }
       if (evicted_handle) {
-        *evicted_handle = real_map_[evict_key].h_;
+        *evicted_handle = evicted_entry->h_;
       }
+      uint64_t sz = evicted_entry->size_;
+      usage_ -= sz;
       real_map_.erase(evict_key);
       // move to ghost
       if (ghost_size_ != 0 && evict_level != 0) {
-        MoveToGhost(evict_key, evict_level);
+        MoveToGhost(evict_key, evict_level, sz);
       }
       while (real_lru_[min_level_non_empty_].empty() &&
              min_level_non_empty_ < max_points_) {
@@ -491,6 +499,7 @@ class HillSubReplacer {
       int attempts = 15;
       std::string evict_key;  // = top_lru_.back();
       int evict_level{-1};    // = real_map_[evict_key].insert_level;
+      HillEntry* evicted_entry;
       std::list<std::string>::iterator evicted_iter;
       assert(top_lru_.size());
       for (auto iter = top_lru_.end();
@@ -498,34 +507,37 @@ class HillSubReplacer {
         --iter;
         std::string& key = *iter;
         auto& entry = real_map_[key];
-        if (entry.h_->HasRefs()) {
+        if (entry.h_ && entry.h_->HasRefs()) {
           --attempts;
           continue;
         }
         evict_level = entry.insert_level;
         evicted_iter = iter;
         evict_key = key;
+        evicted_entry = &entry;
         break;
       }
       if (evict_level != -1) {
         top_lru_.erase(evicted_iter);
         if (evicted_handle) {
-          *evicted_handle = real_map_[evict_key].h_;
+          *evicted_handle = evicted_entry->h_;
         }
+        uint64_t sz = evicted_entry->size_;
+        usage_ -= sz;
         real_map_.erase(evict_key);
         // move to ghost
         if (ghost_size_ != 0 && evict_level != 0) {
-          MoveToGhost(evict_key, evict_level);
+          MoveToGhost(evict_key, evict_level, sz);
         }
       }
     }
   }
-  void MoveToGhost(const std::string& key, int level) {
+  void MoveToGhost(const std::string& key, int level, int size) {
     EvictGhost();
     ghost_lru_.push_front(key);
     // NOTE: 这里应该不用写入value
     ghost_map_[key] =
-        HillEntry(ghost_lru_.begin(), level, cur_ts_, false, nullptr);
+        HillEntry(ghost_lru_.begin(), level, cur_ts_, false, size, nullptr);
   }
   void EvictGhost() {
     if (ghost_map_.size() >= ghost_size_) {
@@ -575,17 +587,20 @@ class HillSubReplacer {
     interval_hit_count_ = 0;
     interval_hit_top_ = 0;
   }
-  bool IsFull() { return real_map_.size() >= size_; }
+  // bool IsFull() { return real_map_.size() >= size_; }
   double GetCurHalf() const { return cur_half_; }
   void Remove(const std::string& key) {
-    if (real_map_.count(key) != 0) {
+    auto rm_iter = real_map_.find(key);
+    if (rm_iter != real_map_.end()) {
+      uint64_t sz = rm_iter->second.size_;
       const std::string& evicted_key = key;
       int evicted_level = 0;
-      if (!real_map_[key].h_recency) {
-        std::list<std::string>::iterator hit_iter = real_map_[key].key_iter;
-        int level = GetCurrentLevel(real_map_[key]);  // real_map_[key].second;
+      if (!rm_iter->second.h_recency) {
+        std::list<std::string>::iterator hit_iter = rm_iter->second.key_iter;
+        int level = GetCurrentLevel(rm_iter->second);
         // erase key in real, use level in real
         real_lru_[level].erase(hit_iter);
+        usage_ -= sz;
         real_map_.erase(key);
         while (real_lru_[min_level_non_empty_].empty() &&
                min_level_non_empty_ < max_points_) {
@@ -594,11 +609,13 @@ class HillSubReplacer {
         // //// assert(min_level_non_empty_ < 10);
         evicted_level = level;
       } else {
-        evicted_level = real_map_[key].insert_level;
-        top_lru_.erase(real_map_[key].key_iter);
+        evicted_level = rm_iter->second.insert_level;
+        top_lru_.erase(rm_iter->second.key_iter);
+        top_lru_size_--;
+        usage_ -= sz;
         real_map_.erase(key);
       }
-      MoveToGhost(evicted_key, evicted_level);
+      MoveToGhost(evicted_key, evicted_level, sz);
     }
   }
   void Touch(const std::string& key) {
@@ -608,7 +625,7 @@ class HillSubReplacer {
       ghost_lru_.erase(entry.key_iter);
       ghost_lru_.push_front(key);
       ghost_map_[key] =
-          HillEntry(ghost_lru_.begin(), cur_l, cur_ts_, false, nullptr);
+          HillEntry(ghost_lru_.begin(), cur_l, cur_ts_, false, entry.size_, nullptr);
     }
   }
   int h1{}, h2{};  // debug
@@ -655,9 +672,11 @@ class HillSubReplacer {
   std::list<int32_t> rolling_ts;
   double top_ratio_;
   int32_t mru_threshold_;
+  uint64_t usage_ = 0;
   friend class HillCache;
   friend class HillReplacer;
   friend class HillCacheShard;
+  uint64_t top_lru_size_ = 0;
 };
 
 class HillReplacer : public Replacer {
@@ -668,7 +687,7 @@ class HillReplacer : public Replacer {
                double lambda = 1.0f, double simulator_ratio = 0.67f,
                double top_ratio = 0.05f, double delta_bound = 0.01f,
                bool update_equals_size = true, int32_t mru_threshold = 64,
-               int32_t minimal_update_size = 10000)
+               int32_t minimal_update_size = 10000, bool enable_virtual = false)
       : Replacer(buffer_size, _stats_interval),
         replacer_r_(buffer_size, init_half, hit_point, max_points_bits,
                     ghost_size_ratio, top_ratio, mru_threshold),
@@ -678,30 +697,22 @@ class HillReplacer : public Replacer {
         lambda_(lambda),
         init_half_(init_half),
         simulator_ratio_(simulator_ratio),
-        delta_bound_(delta_bound) {
+        delta_bound_(delta_bound),
+        enable_virtual_(enable_virtual) {
     update_interval_ = std::max(100, buffer_size);
     update_interval_ = std::min(minimal_update_size, buffer_size);
   }
 
-  RC access(const std::string& key, HillHandle* h) {
+  RC access(const std::string& key, HillHandle* h, uint64_t size) {
     ts++;
-    if (replacer_r_.Access(key, h)) {
+    if (replacer_r_.Access(key, h, size)) {
       increase_hit_count();
-      hit_recorder.push_back(1);
       recorder_hit_count++;
     } else {
       increase_miss_count();
-      hit_recorder.push_back(0);
     }
 
-    if (hit_recorder.size() >= 500000) {
-      if (hit_recorder.front() == 1) {
-        recorder_hit_count--;
-      }
-      hit_recorder.pop_front();
-    }
-
-    replacer_s_.Access(key, nullptr);
+    replacer_s_.Access(key, nullptr, size);
     if (ts % update_interval_ == 0) {
       int32_t r_mc, r_hc;
       int32_t s_mc, s_hc;
@@ -751,18 +762,23 @@ class HillReplacer : public Replacer {
     return RC::SUCCESS;
   }
 
-  RC EnsureBothReplacerFree(autovector<HillHandle*>* deleted) {
-    if (replacer_r_.IsFull()) {
-      HillHandle* evicted_handle;
-      replacer_r_.Evict(&evicted_handle);
-      //// assert(!replacer_r_.IsFull());
-      //// assert(evicted_handle->InCache() && !evicted_handle->HasRefs());
-      deleted->push_back(evicted_handle);
+  RC EnsureBothReplacerFree(autovector<HillHandle*>* deleted, HillHandle* e, uint64_t capacity) {
+    while ((GetRealUsage() + e->total_charge) > capacity &&
+            EvictableCount()) {
+      HillHandle* old = EvictOne();
+      if (old == nullptr) {
+        break;
+      }
+      old->SetInCache(false);
+      // usage_ -= old->total_charge;
+      deleted->push_back(old);
     }
-    // if (replacer_s_.IsFull()) {
-    //   replacer_s_.Evict();
-    //   //// assert(!replacer_s_.IsFull());
-    // }
+    if (enable_virtual_) {
+      while ((GetVirtualUsage() + e->total_charge) > capacity &&
+              VirtualEvictableCount()) {
+        VirtualEvictOne();
+      }  
+    }
     return RC::SUCCESS;
   }
 
@@ -771,21 +787,88 @@ class HillReplacer : public Replacer {
     return handle;
   }
 
-  void Remove(const std::string& key) { replacer_r_.Remove(key); }
-  void Touch(const std::string& key, HillHandle* e) {
-    replacer_r_.Access(key, e);
+  void Remove(const std::string& key) { 
+    replacer_r_.Remove(key); 
+    if (enable_virtual_) {
+      replacer_s_.Remove(key);
+    }
+  }
+  void Touch(const std::string& key, HillHandle* e, uint64_t size) {
+    replacer_r_.Access(key, e, size);
+    if (enable_virtual_) {
+      replacer_s_.Access(key, nullptr, size);
+    }
+    if (enable_virtual_ && ((++ts) % update_interval_ == 0)) {
+      Adjust();
+    }
+  }
+  void Adjust() {
+    int32_t r_mc, r_hc;
+    int32_t s_mc, s_hc;
+    replacer_r_.ReportAndClear(r_mc, r_hc);
+    replacer_s_.ReportAndClear(s_mc, s_hc);
+    double r_hr = (double)r_hc / (r_mc + r_hc);
+    double s_hr = (double)s_hc / (s_mc + s_hc);
+    double cur_half = replacer_r_.GetCurHalf();
+    if (r_hr != 0 && s_hr != 0) {
+      if (fabs(s_hr - r_hr) >= EPSILON) {
+        stable_count_ = 0;
+        if (s_hr > r_hr) {
+          double delta_ratio = (s_hr / r_hr - 1);
+          if (delta_ratio > delta_bound_) {
+            delta_ratio = delta_bound_;
+          }
+          replacer_r_.UpdateHalf(cur_half / (1 + delta_ratio * lambda_));
+        } else {
+          double delta_ratio = (r_hr / s_hr - 1);
+          if (delta_ratio > delta_bound_) {
+            delta_ratio = delta_bound_;
+          }
+          replacer_r_.UpdateHalf(cur_half * (1 + delta_ratio * lambda_));
+        }
+      } else {
+        stable_count_++;
+        if (stable_count_ == 5) {
+          double delta_ratio = 0.1;
+          if (delta_ratio > delta_bound_) {
+            delta_ratio = delta_bound_;
+          }
+          if (cur_half < init_half_) {
+            replacer_r_.UpdateHalf(cur_half * (1 + delta_ratio * lambda_));
+          } else {
+            replacer_r_.UpdateHalf(cur_half / (1 + delta_ratio * lambda_));
+          }
+          stable_count_ = 0;
+        }
+      }
+    }
+    replacer_s_.UpdateHalf(replacer_r_.GetCurHalf() * simulator_ratio_);
+#ifndef NDEBUG
+    std::cout << "Adjustment triggered, Real hit rate: " << r_hr << " Virtual hit rate: " << s_hr << " R: " << cur_half << "\n";
+#endif
   }
   void Insert(const std::string& key, HillHandle* h) {
-    replacer_r_.Access(key, h);
+    Touch(key, h, h->total_charge);
+    // replacer_r_.Access(key, h, h->total_charge);
+    // if (enable_virtual_) {
+    //   replacer_s_.Access(key, nullptr, h->total_charge);
+    // }
   }
-  bool IsFull() { return replacer_r_.IsFull(); }
-  int EvictableCount() { return replacer_r_.real_map_.size(); }
+  // bool IsFull() { return replacer_r_.IsFull(); }
+  int64_t EvictableCount() { return replacer_r_.real_map_.size(); }
+  int64_t VirtualEvictableCount() { return replacer_s_.real_map_.size(); }
   HillHandle* EvictOne() {
     HillHandle* evicted_handle = nullptr;
     replacer_r_.Evict(&evicted_handle);
     return evicted_handle;
   }
+  HillHandle* VirtualEvictOne() {
+    replacer_s_.Evict(nullptr);
+    return nullptr;
+  }
   std::string get_name() { return {"Hill-Cache"}; }
+  uint64_t GetRealUsage() { return replacer_r_.usage_; }
+  uint64_t GetVirtualUsage() { return replacer_s_.usage_; }
 
  private:
   friend class HillCacheShard;
@@ -797,8 +880,13 @@ class HillReplacer : public Replacer {
   double init_half_;
   double simulator_ratio_;
   double delta_bound_;
-  std::list<int32_t> hit_recorder;
-  int32_t recorder_hit_count{};
+  std::list<int64_t> hit_recorder;
+  int64_t recorder_hit_count{};
+  
+  bool enable_virtual_;
+  // uint64_t vusage_ = 0;
+  // uint64_t vhit_c = 0;
+  // uint64_t vtotal_c = 0;
 };
 
 // class HillCache
@@ -818,7 +906,7 @@ class ALIGN_AS(CACHE_LINE_SIZE) HillCacheShard final : public CacheShardBase {
                  double lambda = 1.0f, double simulator_ratio = 0.67f,
                  double top_ratio = 0.05f, double delta_bound = 0.01f,
                  bool update_equals_size = true, int32_t mru_threshold = 64,
-                 int32_t minimal_update_size = 10000,
+                 int32_t minimal_update_size = 10000, bool enable_virtual = false,
                  std::shared_ptr<MemoryAllocator> memory_allocator = nullptr,
                  CacheMetadataChargePolicy metadata_charge_policy =
                      kDefaultCacheMetadataChargePolicy)
@@ -826,7 +914,7 @@ class ALIGN_AS(CACHE_LINE_SIZE) HillCacheShard final : public CacheShardBase {
         hill_replacer_(buffer_size, _stats_interval, init_half, hit_point,
                        max_points_bits, ghost_size_ratio, lambda,
                        simulator_ratio, top_ratio, delta_bound,
-                       update_equals_size, mru_threshold, minimal_update_size),
+                       update_equals_size, mru_threshold, minimal_update_size, enable_virtual),
         capacity_(buffer_size),
         mutex_(true) {}
 
@@ -856,20 +944,19 @@ class ALIGN_AS(CACHE_LINE_SIZE) HillCacheShard final : public CacheShardBase {
     // total_c++;
     {
       DMutexLock l(mutex_);
-      while ((usage_ + e->total_charge) > capacity_ &&
-             hill_replacer_.EvictableCount()) {
-        HillHandle* old = hill_replacer_.EvictOne();
-        if (old == nullptr) {
-          break;
-        }
-        old->SetInCache(false);
-        usage_ -= old->total_charge;
-        // std::cout << usage_ << "!?!" << e->total_charge << std::endl;
-        assert(usage_ < 100000000);
-        last_reference_list.push_back(old);
-      }
+      hill_replacer_.EnsureBothReplacerFree(&last_reference_list, e, capacity_);
+      // while ((hill_replacer_.GetRealUsage() + e->total_charge) > capacity_ &&
+      //        hill_replacer_.EvictableCount()) {
+      //   HillHandle* old = hill_replacer_.EvictOne();
+      //   if (old == nullptr) {
+      //     break;
+      //   }
+      //   old->SetInCache(false);
+      //   // usage_ -= old->total_charge;
+      //   last_reference_list.push_back(old);
+      // }
 
-      if (usage_ + e->total_charge > capacity_ &&
+      if (hill_replacer_.GetRealUsage() + e->total_charge > capacity_ &&
           (strict_capacity_limit_ || handle == nullptr)) {
         e->SetInCache(false);
         if (handle == nullptr) {
@@ -882,14 +969,13 @@ class ALIGN_AS(CACHE_LINE_SIZE) HillCacheShard final : public CacheShardBase {
         }
       } else {
         HillHandle* old = hill_replacer_.get(k);
-        usage_ += e->total_charge;
+        // usage_ += e->total_charge;
 
         if (old != nullptr) {
           s = Status::OkOverwritten();
           old->SetInCache(false);
           if (!old->HasRefs()) {
             hill_replacer_.Remove(old->key().ToString());
-            usage_ -= old->total_charge;
             last_reference_list.push_back(old);
           }
         }
@@ -927,18 +1013,18 @@ class ALIGN_AS(CACHE_LINE_SIZE) HillCacheShard final : public CacheShardBase {
         }
         e->Ref();
         e->SetHit();
-        hill_replacer_.Touch(e->key().ToString(), e);
+        hill_replacer_.Touch(e->key().ToString(), e, e->total_charge);
         hit_c++;
       }
     }
 #ifndef NDEBUG
-    if (total_c % 10000 == 0) {
-      std::cout << "HillCache hit rate: " << (double)hit_c / total_c
-                << " R: " << hill_replacer_.replacer_r_.GetCurHalf()
-                << " Shard: " << this << '\n';
-      std::cout << hill_replacer_.replacer_r_.real_map_.size() << " "
-                << hill_replacer_.replacer_r_.size_ << " " << usage_ << "\n";
-    }
+    // if (total_c % 10000 == 0) {
+    //   std::cout << "HillCache hit rate: " << (double)hit_c / total_c
+    //             << " R: " << hill_replacer_.replacer_r_.GetCurHalf()
+    //             << " Shard: " << this << '\n';
+    //   std::cout << hill_replacer_.replacer_r_.real_map_.size() << " "
+    //             << hill_replacer_.replacer_r_.size_ << " " << hill_replacer_.GetRealUsage() << "\n";
+    // }
 #endif
     return reinterpret_cast<HillHandle*>(e);
   }
@@ -956,14 +1042,14 @@ class ALIGN_AS(CACHE_LINE_SIZE) HillCacheShard final : public CacheShardBase {
       must_free = e->Unref();
       was_in_cache = e->InCache();
       if (must_free && was_in_cache) {
-        if (usage_ > capacity_ || erase_if_last_ref) {
+        if (hill_replacer_.GetRealUsage() > capacity_ || erase_if_last_ref) {
           e->SetInCache(false);
         } else {
           must_free = false;
         }
       }
       if (must_free) {
-        usage_ -= e->total_charge;
+        // usage_ -= e->total_charge;
         hill_replacer_.Remove(e->key().ToString());
       } else {
         // if (!erase_if_last_ref) {
@@ -1029,7 +1115,7 @@ class ALIGN_AS(CACHE_LINE_SIZE) HillCacheShard final : public CacheShardBase {
 
   virtual size_t GetCapacity() const { return capacity_; }
 
-  virtual size_t GetUsage() const { return usage_; }
+  virtual size_t GetUsage() const { return hill_replacer_.replacer_r_.usage_; }
 
   virtual size_t GetUsage(HillHandle* handle) const {
     return handle->GetCharge(metadata_charge_policy_);
@@ -1110,9 +1196,13 @@ class ALIGN_AS(CACHE_LINE_SIZE) HillCacheShard final : public CacheShardBase {
   mutable DMutex mutex_;
   std::shared_ptr<MemoryAllocator> const allocator_;
   // std::atomic<uint64_t> usage_{0};
-  uint64_t usage_ = 0;
+  // uint64_t usage_ = 0;
   uint64_t hit_c = 0;
   uint64_t total_c = 0;
+  // bool enable_virtual_ = false;
+  // uint64_t vusage_ = 0;
+  // uint64_t vhit_c = 0;
+  // uint64_t vtotal_c = 0;
 };
 
 class ShardedHillCache
@@ -1131,7 +1221,7 @@ class ShardedHillCache
                               opts.ghost_size_ratio, opts.lambda,
                               opts.simulator_ratio, opts.top_ratio,
                               opts.delta_bound, opts.update_equals_size,
-                              opts.mru_threshold, opts.minimal_update_size);
+                              opts.mru_threshold, opts.minimal_update_size, opts.enable_virtual);
     });
   }
   const char* Name() const override { return "LRUCache"; }

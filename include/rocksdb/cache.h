@@ -317,6 +317,7 @@ struct ShardedHillCacheOptions : public ShardedCacheOptions {
   bool update_equals_size = true;
   int32_t mru_threshold = 64;
   int32_t minimal_update_size = 10000;
+  bool enable_virtual = false;
 
   std::shared_ptr<Cache> MakeHillCache() const;
 };
